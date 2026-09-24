@@ -12,6 +12,46 @@ Started: 2026-09-21
 
 ---
 
+## Where we left off (2026-09-24)
+
+**Phase 0 is done. Phase 1 is in progress (3 of 9 items done).** Resume at the staff-app items in
+[Phase 1](#phase-1--code-changes-needed-before-deployment). Suggested order: first check whether
+`rewrites()` bakes the auth-server URL in at build time (run `next build` and read
+`.next/routes-manifest.json`; the local probe so far only used `next dev`, which can't tell), because
+the answer decides whether the `AUTH_SERVER_URL` rename is a one-line env change or needs the runtime
+proxy route handler.
+
+**How we work (learning first):** every code change is shown and explained one at a time. The owner
+applies it, or asks Claude to, and it is then reviewed. Prefer industry-standard production patterns
+over the minimum for ~20 users, and design for the API and auth-server possibly going public later
+(mobile app). The owner is on Windows/PowerShell 7, so give commands as PowerShell or as a script file,
+not multi-line bash.
+
+**Local setup still needed after this session's changes:**
+- `auth-server/.env`: add a bare `TRUSTED_PROXIES=` line. It is now required to be *present*
+  (empty is allowed), and auth-server won't start without it.
+- `membership-applications/.env`: needs `JWT_ISSUER` and `JWT_AUDIENCE` (both `http://localhost:5000`
+  locally, same as `AUTH_SERVER_URL`). Already done and verified. `RATE_LIMIT_STORAGE_URI` is
+  optional (defaults to `memory://`).
+
+**Decisions and findings from Phase 1 so far (details are in the items below):**
+- Listen `PORT` and public `BETTER_AUTH_URL` are separate variables in auth-server.
+- membership-applications validates `iss`/`aud` from `JWT_ISSUER`/`JWT_AUDIENCE` (public URL) and
+  fetches keys from `AUTH_SERVER_URL` (internal address).
+- Rate limiting in membership-applications is now per user on the verified JWT `sub`, built directly
+  on the `limits` library in a FastAPI dependency (not slowapi). Storage is swappable to Redis through
+  `RATE_LIMIT_STORAGE_URI`; needed once there is more than one worker or replica. The anonymous per-IP
+  layer is deliberately left to Cloudflare/WAF (Phase 8.5) and must be revisited before exposing the
+  API publicly. This was smoke-tested end to end with a real token: ten `200`s, then `429` with
+  `Retry-After`.
+- auth-server's `TRUST_PROXY` boolean was replaced by `TRUSTED_PROXIES` (IPs/CIDRs). Behind an ALB
+  the forwarded header holds several addresses, which better-auth cannot resolve without a trusted
+  list. **Remember to set it in the auth-server task definition (Phase 8: the VPC CIDR; Phase 8.5:
+  add Cloudflare's ranges).** Forgetting it gives no error, only one shared sign-in rate-limit
+  bucket for all users, apart from a startup warning under `NODE_ENV=production`.
+
+---
+
 ## Decisions made
 
 | Decision | Choice | Why |
@@ -83,7 +123,7 @@ Why it's shaped this way:
 ---
 
 ## Phase 0 — AWS account & guardrails
-`[ ]`
+`[x]`
 
 Do this first, even before Docker. It's quick, and it's what keeps a surprise bill from happening.
 
@@ -100,26 +140,35 @@ Note: Ended up creating a new account via the new experience so now I have a AWS
 ---
 
 ## Phase 1 — Code changes needed before deployment
-`[ ]`
+`[~]`
 
 Found while reviewing the repos. Each one works on localhost but breaks behind an ALB or
 Service Connect.
 
-- [ ] **auth-server: listen port is derived from `BETTER_AUTH_URL`** (`src/lib/config.ts:62`).
+- [x] **auth-server: listen port is derived from `BETTER_AUTH_URL`** (`src/lib/config.ts:62`).
       In prod that URL is `https://staff.example.org`, so it would try to listen on 443. Add a
       separate `PORT` env var (default 5000) and keep `BETTER_AUTH_URL` only as the public URL.
-- [ ] **membership-applications: `AUTH_SERVER_URL` is used for both the JWKS fetch and `iss`/`aud`**
+- [x] **membership-applications: `AUTH_SERVER_URL` is used for both the JWKS fetch and `iss`/`aud`**
       (`api/jwt_auth.py:17,43-44`). In AWS the fetch URL is internal (`http://auth-server:5000`)
       but the issuer is the public URL, so every token would fail validation. Split it into
       `AUTH_SERVER_URL` (fetch) and `JWT_ISSUER`/`JWT_AUDIENCE` (validation).
-- [ ] **Rate limiters will treat all users as one client.** Behind the BFF, every request comes
+- [x] **Rate limiters will treat all users as one client.** Behind the BFF, every request comes
       from staff-app's IP:
-  - membership-applications' `slowapi` uses `get_remote_address`, so 60/min would be shared by
-    *everyone*. Key it by JWT `sub` instead (or drop it, since only staff-app can reach it).
-  - auth-server with `TRUST_PROXY=false` would see staff-app's IP too, so better-auth's
-    sign-in limit (3 per 10s) would become global. Set `TRUST_PROXY=true` in prod (safe
-    only because auth-server isn't publicly reachable), and **verify** that the forwarded
-    `X-Forwarded-For` (ALB → Next.js rewrite → auth-server) carries the real client IP.
+  - [x] membership-applications' `slowapi` used `get_remote_address`, so 60/min would be shared by
+    *everyone*. Replaced by a per-user limiter on the verified JWT `sub` (`limits` library in a
+    FastAPI dependency, storage swappable to Redis via `RATE_LIMIT_STORAGE_URI`). The per-IP layer for
+    anonymous traffic is left to Cloudflare (Phase 8.5); revisit before exposing the API publicly.
+  - [x] auth-server with `TRUST_PROXY=false` would see staff-app's IP too, so better-auth's
+    sign-in limit (3 per 10s) would become global. **Verified, and the original plan
+    (`TRUST_PROXY=true`) was not enough:** Next's rewrite forwards `X-Forwarded-For` untouched (it
+    adds nothing), so auth-server gets whatever the ALB produced, and better-auth treats a
+    multi-address header as unresolvable unless told which hops are trusted (everyone then shares
+    one `no-trusted-ip` bucket). Replaced the boolean with `TRUSTED_PROXIES` (comma-separated
+    IPs/CIDRs, validated at startup, passed to better-auth's `advanced.ipAddress.trustedProxies`,
+    which reads the header right to left and skips trusted hops). The variable is required (startup
+    fails if it's absent; an empty value is allowed and means "no proxy", with a startup warning under
+    `NODE_ENV=production`). **Set it in the auth-server task definition (Phase 8):** the VPC CIDR;
+    Phase 8.5 adds Cloudflare's ranges.
 - [ ] **staff-app: `NEXT_PUBLIC_AUTH_SERVER_URL` is now only used server-side.** Rename it to a
       server-only `AUTH_SERVER_URL`.
 - [ ] **staff-app: `rewrites()` in `next.config.mjs` is evaluated at build time** (it ends up in
@@ -275,9 +324,13 @@ so without the security-group step below, attackers can skip Cloudflare entirely
       hand-maintained.
 - [ ] **Client IP, end to end.** Cloudflare sets `CF-Connecting-IP` (overwriting any value the
       client sent) and appends to `X-Forwarded-For`. The ALB then appends Cloudflare's edge IP.
-      - auth-server: once the ALB only accepts Cloudflare, `CF-Connecting-IP` is trustworthy.
-        Point better-auth at it (`advanced.ipAddress.ipAddressHeaders: ['cf-connecting-ip']`),
-        and **verify** that the Next.js proxy passes that header through to auth-server.
+      - auth-server: with Cloudflare in front, `X-Forwarded-For` always holds 2+ addresses, so add
+        Cloudflare's published ranges to `TRUSTED_PROXIES` (Phase 1); better-auth then skips the
+        edge address and keys on the real client (checked against better-auth's resolver:
+        `client, cf-edge` → `client`; a spoofed leftmost entry is ignored). Alternative once the ALB
+        only accepts Cloudflare: point better-auth at `CF-Connecting-IP` with
+        `advanced.ipAddress.ipAddressHeaders: ['cf-connecting-ip']`. The Next.js rewrite already
+        passes that header through untouched (verified locally).
       - membership-applications: not affected if its rate limiter is keyed by JWT `sub` (Phase 1).
       - ALB access logs and CloudWatch will show Cloudflare IPs, so log `CF-Connecting-IP` in the apps.
 - [ ] **Don't cache anything dynamic.** Cloudflare's defaults only cache static file extensions,
