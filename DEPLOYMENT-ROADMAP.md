@@ -87,13 +87,14 @@ Why it's shaped this way:
 
 Do this first, even before Docker. It's quick, and it's what keeps a surprise bill from happening.
 
-- [ ] Create the account. Turn on **MFA for root**, then stop using root.
-- [ ] Enable **IAM Identity Center**. Create your own admin user and sign in with it.
-- [ ] Install AWS CLI v2 and run `aws configure sso` (short-lived credentials, no access keys on disk).
-- [ ] **AWS Budgets**: alerts at $20, $50 and $80 (actual and forecasted).
-- [ ] Enable **Cost Anomaly Detection**. Check what free-tier credits the new account got.
-- [ ] Set the default region to `us-east-2` (CLI profile + console) and create everything there.
+- [x] Create the account. Turn on **MFA for root**, then stop using root. (**Have to keep using root, see note on next item**)
+- [ ] Enable **IAM Identity Center**. Create your own admin user and sign in with it. (**If I do this an AWS Organization is created and the free credits expire**)
+- [x] Install AWS CLI v2 and run `aws configure sso` (short-lived credentials, no access keys on disk). (**Had to to run aws login instead**)
+- [x] **AWS Budgets**: alerts at $20, $50 and $80 (actual and forecasted).
+- [x] Enable **Cost Anomaly Detection**. Check what free-tier credits the new account got.
+- [x] Set the default region to `us-east-2` (CLI profile + console) and create everything there.
 
+Note: Ended up creating a new account via the new experience so now I have a AWS Builder ID  
 **New concepts:** root vs IAM identities, SSO/short-lived credentials, the billing console.
 
 ---
