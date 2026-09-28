@@ -12,20 +12,28 @@ Started: 2026-09-21
 
 ---
 
-## Where we left off (2026-09-24)
+## Where we left off (2026-09-28)
 
-**Phase 0 is done. Phase 1 is in progress (3 of 9 items done).** Resume at the staff-app items in
-[Phase 1](#phase-1--code-changes-needed-before-deployment). Suggested order: first check whether
-`rewrites()` bakes the auth-server URL in at build time (run `next build` and read
-`.next/routes-manifest.json`; the local probe so far only used `next dev`, which can't tell), because
-the answer decides whether the `AUTH_SERVER_URL` rename is a one-line env change or needs the runtime
-proxy route handler.
+**Phase 0 is done. Phase 1 is in progress.** The staff-app rename and the runtime `/api/auth`
+proxy are done and verified (see [Phase 1](#phase-1--code-changes-needed-before-deployment)).
+The env-validation question is decided (validate in `/api/health`, no `instrumentation.ts`).
+Resume at `output: "standalone"` + `/api/health`. The staff-app work is on branch
+`deploy/runtime-auth-proxy` (commit `d887739`), not merged to `main` yet.
 
-**How we work (learning first):** every code change is shown and explained one at a time. The owner
-applies it, or asks Claude to, and it is then reviewed. Prefer industry-standard production patterns
-over the minimum for ~20 users, and design for the API and auth-server possibly going public later
-(mobile app). The owner is on Windows/PowerShell 7, so give commands as PowerShell or as a script file,
-not multi-line bash.
+**How we work (read this at every session start):** the main goal is for the owner to learn, not
+just to ship, so go slowly.
+- **Explain every decision:** what the options are, which one is standard in industry, and why this
+  one was picked.
+- **One change at a time.** Show each code change before it is applied. The owner decides: they
+  implement it and Claude reviews it, or Claude implements it. Then move on to the next item.
+- **Ask questions** whenever something is unclear. Don't guess what the owner wants.
+- **Challenge the owner and don't sugar-coat.** Question every decision, including the owner's own
+  and ones already written in this doc. Don't take the owner's claims on trust; verify them. Say
+  plainly when something is wrong.
+- Prefer industry-standard production patterns over the minimum for ~20 users, and design for the
+  API and auth-server possibly going public later (mobile app).
+- The owner is on Windows/PowerShell 7, so give commands as PowerShell or as a script file, not
+  multi-line bash.
 
 **Local setup still needed after this session's changes:**
 - `auth-server/.env`: add a bare `TRUSTED_PROXIES=` line. It is now required to be *present*
@@ -169,14 +177,52 @@ Service Connect.
     fails if it's absent; an empty value is allowed and means "no proxy", with a startup warning under
     `NODE_ENV=production`). **Set it in the auth-server task definition (Phase 8):** the VPC CIDR;
     Phase 8.5 adds Cloudflare's ranges.
-- [ ] **staff-app: `NEXT_PUBLIC_AUTH_SERVER_URL` is now only used server-side.** Rename it to a
-      server-only `AUTH_SERVER_URL`.
-- [ ] **staff-app: `rewrites()` in `next.config.mjs` is evaluated at build time** (it ends up in
-      the routes manifest). **Verify.** If confirmed, the auth-server URL is baked into the image. That's
+- [x] **staff-app: `NEXT_PUBLIC_AUTH_SERVER_URL` is now only used server-side.** Renamed to a
+      server-only `AUTH_SERVER_URL` in `lib/env/server.ts` (a module marked `server-only`). Its value
+      must be a bare `http(s)` origin, because `proxy.ts` (`new URL(absolutePath, base)`) drops a
+      base path, while `apiFetch`'s `joinUrl` keeps it. **Local setup:** rename the variable in
+      `staff-app/.env.local`.
+- [x] **Env validation runs lazily (verified 2026-09-28):** an invalid `AUTH_SERVER_URL` only crashes
+      on the first request that goes through the middleware, not when the server boots. `/api/health`
+      is outside the matcher, so an ECS task would pass its health check and the circuit breaker
+      would miss the bad config. Plan: validate at boot in `instrumentation.ts` `register()`.
+      Importing the env module in `next.config.mjs` (the t3-env pattern) was rejected, because it
+      validates at build time and breaks "build once, deploy anywhere".
+      **Verified:** under `next start`, `register()` is lazy too. `Ready` is logged before anything
+      loads, and `prepare()` (which calls `register()`) only runs on the first request
+      (`next.js:182`, `base-server.js:467`). With `instrumentation.ts` importing the env module, a
+      bad value makes *every* request return 500, including routes outside the middleware (tested:
+      `/api/nothing` gave `500, 500`), while the process keeps running. `server-only` works in the
+      instrumentation bundle. So the ALB health check will fail and the circuit breaker can catch
+      it. `/api/health` must be a dynamic Next route (not a static file) for this to hold.
+      **Decision: no `instrumentation.ts`.** `/api/health` imports the env module itself, so an
+      invalid config fails the ALB health check (a *readiness* check) and the ALB never sends
+      traffic to that task. This is explicit and doesn't depend on Next's lazy `prepare()`. The
+      trade-off is a weaker ECS signal ("failed ELB health checks" rather than "container exited").
+      Rule: **any new config module must be imported by `/api/health`**. Rejected alternatives:
+      `register()` + `process.exit(1)` (depends on Next internals), and a preflight script in the
+      Docker `CMD` (the only truly boot-time option, but it duplicates the TS schema; can revisit in
+      Phase 2).
+- [x] **staff-app: `rewrites()` in `next.config.mjs` is evaluated at build time** (it ends up in
+      the routes manifest). **Verified (2026-09-28):** built with the URL set to
+      `http://baked-at-build.invalid:5000` (it showed up in `.next/routes-manifest.json`), then ran
+      `next start` with a different URL. The proxy still tried `baked-at-build.invalid`
+      (`ENOTFOUND`), so the env var at start is ignored. The `NEXT_PUBLIC_` prefix is not the
+      cause: `next.config.mjs` isn't bundled, and `next build` calls `rewrites()` once and writes the
+      result as data. So the auth-server URL is baked into the image.
+      **Fixed:** the rewrite was replaced by a middleware rewrite in `proxy.ts`, which goes first and
+      skips the session logic, with the matcher `/api/auth/:path+`. It ends in the same
+      `proxyRequest()` as config rewrites. A build with an `.invalid` URL, run against a local echo
+      server, showed the URL is read at runtime, the query string and cookies are forwarded,
+      `X-Forwarded-For` arrives untouched, and both `Set-Cookie`s come back. A route handler that
+      reimplements the proxy was rejected (hand-written auth proxy, and `X-Forwarded-For` would have
+      to be rebuilt by hand). That's
       acceptable with prod only (pass it as a build arg), but the cleaner fix is a runtime route
       handler `app/api/auth/[...all]/route.ts` that proxies using the env var at request time.
 - [ ] **staff-app: add `output: "standalone"`** (small image, no `node_modules` copy) and a
-      `/api/health` route for the ALB target group.
+      `/api/health` route for the ALB target group. The route must be dynamic and must import
+      `lib/env/server` (see the env validation item above). Open question: should it also check
+      auth-server? (What happens to staff-app's tasks when auth-server is down for 30s?)
 - [ ] **auth-server: add `build` + `start` scripts.** The source uses `.js` import specifiers
       for `.ts` files, so it needs `tsc` → `dist/` and then `node dist/index.js`.
 - [ ] **auth-server: graceful shutdown** (its own ROADMAP Phase 6). ECS sends SIGTERM on every
