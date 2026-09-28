@@ -16,9 +16,11 @@ Started: 2026-09-21
 
 **Phase 0 is done. Phase 1 is in progress.** The staff-app rename and the runtime `/api/auth`
 proxy are done and verified (see [Phase 1](#phase-1--code-changes-needed-before-deployment)).
-The env-validation question is decided (validate in `/api/health`, no `instrumentation.ts`).
-Resume at `output: "standalone"` + `/api/health`. The staff-app work is on branch
-`deploy/runtime-auth-proxy` (commit `d887739`), not merged to `main` yet.
+**All staff-app items in Phase 1 are done:** runtime `/api/auth` proxy, `AUTH_SERVER_URL`
+rename, `/api/health`, and standalone output. They're on the staff-app branch
+`deploy/runtime-auth-proxy` (`d887739`, `c4cebe9`, `fde6318`), **not merged to `main` yet**, and this
+roadmap's changes are on `docs/phase1-staff-app-progress`. Resume at the auth-server items:
+`build` + `start` scripts, then graceful shutdown, then production CORS.
 
 **How we work (read this at every session start):** the main goal is for the owner to learn, not
 just to ship, so go slowly.
@@ -219,10 +221,25 @@ Service Connect.
       to be rebuilt by hand). That's
       acceptable with prod only (pass it as a build arg), but the cleaner fix is a runtime route
       handler `app/api/auth/[...all]/route.ts` that proxies using the env var at request time.
-- [ ] **staff-app: add `output: "standalone"`** (small image, no `node_modules` copy) and a
-      `/api/health` route for the ALB target group. The route must be dynamic and must import
-      `lib/env/server` (see the env validation item above). Open question: should it also check
-      auth-server? (What happens to staff-app's tasks when auth-server is down for 30s?)
+- [x] **staff-app: add `output: "standalone"`** (small image, no `node_modules` copy) and a
+      `/api/health` route for the ALB target group. **Done** (staff-app `c4cebe9`, `fde6318`,
+      branch `deploy/runtime-auth-proxy`). Verified with `node .next/standalone/server.js`:
+      - The output is ~23 MB, has no `.env*` files, and gets config only from real env vars. With
+        a variable missing, `/api/health` returned 500 on its own.
+      - `public/` and `.next/static/` are **not** included. Without them, CSS returned 404 while
+        `/api/health` returned 200, so the health check can't catch this (see Phase 2).
+      - `server.js` reads `PORT` and `HOSTNAME`. In Docker, set `HOSTNAME=0.0.0.0` (Docker sets
+        `HOSTNAME` to the container name).
+      - `pnpm start` (`next start`) is kept for quick local runs and prints a warning under
+        standalone. **Test production behaviour with compose (Phase 3), not with `pnpm start`.**
+
+      The `/api/health` route must be dynamic and must import
+      `lib/env/server` (see the env validation item above). **Decided: shallow check, no call to
+      auth-server.** If staff-app's check depended on auth-server, a short auth-server outage would
+      make every staff-app task unhealthy. ECS would restart them in a loop (a cascading failure
+      that outlasts the original one), a good staff-app deploy could be rolled back, and the ALB
+      fails open when all targets are unhealthy anyway. Dependency outages belong to monitoring
+      (Phase 9).
 - [ ] **auth-server: add `build` + `start` scripts.** The source uses `.js` import specifiers
       for `.ts` files, so it needs `tsc` → `dist/` and then `node dist/index.js`.
 - [ ] **auth-server: graceful shutdown** (its own ROADMAP Phase 6). ECS sends SIGTERM on every
@@ -256,7 +273,11 @@ Per repo:
       `drizzle-kit` is a dev dependency, so either build a separate `migrate` target in the same
       Dockerfile or use drizzle's runtime `migrate()` function. Run it as a **one-off ECS task**
       before deploying, not on app startup.
-- [ ] **staff-app**: Next.js standalone output → `node server.js`.
+- [ ] **staff-app**: Next.js standalone output → `node server.js`. Copy `.next/static` →
+      `.next/standalone/.next/static` and `public` → `.next/standalone/public`, and set
+      `ENV HOSTNAME=0.0.0.0`. Add a **post-build smoke test** (in CI or a script): run the image,
+      then fetch `/api/health` **and** one `/_next/static` file. A missing static copy leaves
+      the health check at 200, so only the asset fetch catches it.
 
 **New concepts:** layers & caching, multi-stage builds, image size, build args vs runtime env.
 
@@ -482,6 +503,11 @@ Owned by **auth-server**. It already stores the user's `image` field.
 - Staging environment (a second copy from the same IaC with different variables).
 - WAF on the ALB, Multi-AZ RDS, autoscaling. Mostly for learning at this user count.
 - Fargate Spot for non-prod, VPC endpoints for ECR/S3/SSM (less NAT traffic).
+- staff-app UX when auth-server is down: today, pages show the default unstyled `app/error.tsx`
+  ("Something went wrong!"), and the proxy returns a bare 500 to the sign-in form. Show a clear
+  "temporarily unavailable" message instead, and add `global-error.tsx` (errors in the root
+  layout skip `error.tsx`). This is deliberately not handled by the health check, which is
+  shallow (see Phase 1).
 
 ---
 
