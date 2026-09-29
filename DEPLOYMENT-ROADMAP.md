@@ -17,10 +17,11 @@ Started: 2026-09-21
 **Phase 0 is done. Phase 1 is in progress.** All staff-app items in Phase 1 are done and merged
 to staff-app `main` (runtime `/api/auth` proxy, `AUTH_SERVER_URL` rename, `/api/health`,
 standalone output). auth-server's `build`/`start`/`dev` scripts are merged to auth-server `main`.
-Dev-only `.env` loading (dotenv removed) is done on the auth-server branch `deploy/node-env-file`
-(`cd2445f`, `364e08e`), **not merged to `main` yet**, and this roadmap's changes are on
+Two auth-server branches are **not merged to `main` yet**, and they are stacked, so merge them in
+this order: `deploy/node-env-file` (dev-only `.env` loading, dotenv removed: `cd2445f`, `364e08e`),
+then `deploy/graceful-shutdown` (`e8aa9ea`, `e507891`). This roadmap's changes are on
 `docs/phase1-node-env-file`.
-Resume at the next auth-server item: graceful shutdown, then production CORS.
+Resume at the last Phase 1 item: production CORS.
 
 **How we work (read this at every session start):** the main goal is for the owner to learn, not
 just to ship, so go slowly.
@@ -282,8 +283,23 @@ Service Connect.
         Wrapping drizzle-kit in `node --env-file-if-exists` was rejected (it depends on the
         package's internal `bin.cjs` path).
       - `.env` is read once at startup, as it was with dotenv: restart `pnpm dev` after editing it.
-- [ ] **auth-server: graceful shutdown** (its own ROADMAP Phase 6). ECS sends SIGTERM on every
-      deploy, so finish this before prod.
+- [x] **auth-server: graceful shutdown** (its own ROADMAP Phase 6). ECS sends SIGTERM on every
+      deploy, so finish this before prod. **Done** (auth-server `e8aa9ea`, branch
+      `deploy/graceful-shutdown`; details are in auth-server's ROADMAP Phase 6). On a signal it
+      runs `server.close()`, then `pool.end()`, and exits `0`. The hard deadline is
+      `SHUTDOWN_TIMEOUT_MS` (default 20s), after which it exits `1`.
+      - **Found by testing:** a keep-alive socket that is busy when shutdown starts keeps
+        `server.close()` waiting for `keepAliveTimeout` after its response. With keep-alive above
+        the proxy's idle timeout, that runs past the grace period into `SIGKILL`. Fixed by sending
+        `Connection: close` on every response during shutdown.
+      - Tested in Docker with real signals and node as PID 1: in-flight requests complete, new
+        connections are refused, and the deadline and double-signal paths exit `1`. A terminal
+        Ctrl+C under `tsx watch` (a process-group SIGINT) shuts down once. Testing gotcha: on
+        Docker Desktop the *host* port still accepts TCP after the app stops listening (Docker's
+        proxy does it). Probe from inside the container instead.
+      - Not tested on Windows: a native Ctrl+C under `pnpm dev`.
+      - Follow-ups are in Phase 2 (`CMD`), Phase 3 (`stop_grace_period`) and Phase 8 (`stopTimeout`,
+        Service Connect draining).
 - [ ] Production CORS: auth-server `CORS_ORIGINS` = staff public URL. membership-applications
       barely needs CORS anymore (the browser never calls it).
 
@@ -309,7 +325,9 @@ Per repo:
       the Debian version `python:3.14-slim` is based on. Entry point:
       `python -m membership_applications.api.run`, `WORKERS=1` (scale with tasks instead).
       Azure SQL needs `Encrypt=yes` in the connection string.
-- [ ] **auth-server**: pnpm install → `tsc` build → runtime with prod deps only. **Migrations**:
+- [ ] **auth-server**: pnpm install → `tsc` build → runtime with prod deps only. Use
+      `CMD ["node", "--enable-source-maps", "dist/index.js"]` (exec form, node as PID 1), **not**
+      `pnpm start`, so SIGTERM reaches the app's shutdown handler. **Migrations**:
       `drizzle-kit` is a dev dependency, so either build a separate `migrate` target in the same
       Dockerfile or use drizzle's runtime `migrate()` function. Run it as a **one-off ECS task**
       before deploying, not on app startup.
@@ -331,6 +349,8 @@ Per repo:
       its firewall.
 - [ ] The `migrate` service runs before auth-server (`depends_on: condition: service_completed_successfully`).
 - [ ] Healthchecks plus `depends_on: condition: service_healthy`.
+- [ ] `stop_grace_period: 30s` on auth-server. Compose's default is 10s, which is below
+      auth-server's `SHUTDOWN_TIMEOUT_MS` (20s).
 - [ ] Only staff-app publishes a port to the host, to mirror prod (auth/membership internal-only).
 - [ ] `.env.example` per service, with real `.env` files gitignored.
 - [ ] Test the whole flow: sign-up → email verification → sign-in → list applications (JWT path).
@@ -392,6 +412,13 @@ Per repo:
 - [ ] 3 task definitions (start at 0.25 vCPU / 0.5 GB; staff-app may need 1 GB), ARM64,
       logs → CloudWatch (retention 14–30 days, not "never expire").
 - [ ] 3 services, desired count 1 each. Deployment circuit breaker with rollback on.
+- [ ] Container `stopTimeout` above auth-server's `SHUTDOWN_TIMEOUT_MS` (30s default vs 20s is
+      fine; if you raise one, raise the other).
+- [ ] **Verify Service Connect draining.** Does ECS remove auth-server from Service Connect before
+      sending SIGTERM, or do requests keep arriving after it? Test it by redeploying while running
+      a request loop through staff-app and watching for errors. If errors show up, add a short
+      pre-stop delay to auth-server's shutdown (keep serving with `/health` at 503 for a few
+      seconds before `server.close()`).
 - [ ] **ACM certificate** in `us-east-2` for the staff-app hostname (e.g. `staff.<domain>`).
       Validate by DNS: add the CNAME ACM gives you in **Cloudflare**, as DNS-only.
 - [ ] ALB HTTPS listener (ACM cert), HTTP→HTTPS redirect, target group → staff-app `/api/health`.
