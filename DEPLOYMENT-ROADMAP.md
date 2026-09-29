@@ -14,14 +14,14 @@ Started: 2026-09-21
 
 ## Where we left off (2026-09-28)
 
-**Phase 0 is done. Phase 1 is in progress.** All staff-app items in Phase 1 are done and merged
-to staff-app `main` (runtime `/api/auth` proxy, `AUTH_SERVER_URL` rename, `/api/health`,
-standalone output). auth-server's `build`/`start`/`dev` scripts are merged to auth-server `main`.
-Two auth-server branches are **not merged to `main` yet**, and they are stacked, so merge them in
-this order: `deploy/node-env-file` (dev-only `.env` loading, dotenv removed: `cd2445f`, `364e08e`),
-then `deploy/graceful-shutdown` (`e8aa9ea`, `e507891`). This roadmap's changes are on
-`docs/phase1-node-env-file`.
-Resume at the last Phase 1 item: production CORS.
+**Phases 0 and 1 are done. Next is Phase 2 (Dockerfiles).** All staff-app items in Phase 1 are
+merged to staff-app `main`, and auth-server's `build`/`start`/`dev` scripts are merged to
+auth-server `main`. **Still to merge:**
+- auth-server: three **stacked** branches, merged in this order: `deploy/node-env-file`
+  (`cd2445f`, `364e08e`), then `deploy/graceful-shutdown` (`e8aa9ea`, `e507891`), then
+  `deploy/split-origins` (`feee555`).
+- membership-applications: `deploy/cors-opt-in` (`3afdab2`).
+- This roadmap's changes are on `docs/phase1-node-env-file`.
 
 **How we work (read this at every session start):** the main goal is for the owner to learn, not
 just to ship, so go slowly.
@@ -44,6 +44,10 @@ just to ship, so go slowly.
 - `membership-applications/.env`: needs `JWT_ISSUER` and `JWT_AUDIENCE` (both `http://localhost:5000`
   locally, same as `AUTH_SERVER_URL`). Already done and verified. `RATE_LIMIT_STORAGE_URI` is
   optional (defaults to `memory://`).
+- `auth-server/.env`: `CORS_ORIGINS=http://localhost:3000,http://localhost:8000` became
+  `TRUSTED_ORIGINS=http://localhost:3000` plus an empty `CORS_ORIGINS=`. Without `TRUSTED_ORIGINS`,
+  sign-in from staff-app gets `403 INVALID_ORIGIN`. `membership-applications/.env`:
+  `CORS_ALLOWED_ORIGINS=` (empty). Both are already done on this machine.
 
 **Decisions and findings from Phase 1 so far (details are in the items below):**
 - Listen `PORT` and public `BETTER_AUTH_URL` are separate variables in auth-server.
@@ -151,7 +155,7 @@ Note: Ended up creating a new account via the new experience so now I have a AWS
 ---
 
 ## Phase 1 — Code changes needed before deployment
-`[~]`
+`[x]`
 
 Found while reviewing the repos. Each one works on localhost but breaks behind an ALB or
 Service Connect.
@@ -300,8 +304,31 @@ Service Connect.
       - Not tested on Windows: a native Ctrl+C under `pnpm dev`.
       - Follow-ups are in Phase 2 (`CMD`), Phase 3 (`stop_grace_period`) and Phase 8 (`stopTimeout`,
         Service Connect draining).
-- [ ] Production CORS: auth-server `CORS_ORIGINS` = staff public URL. membership-applications
-      barely needs CORS anymore (the browser never calls it).
+- [x] **Production CORS.** The original plan was to set auth-server's `CORS_ORIGINS` to the staff
+      public URL. **Replaced** (auth-server `feee555`, branch `deploy/split-origins`;
+      membership-applications `3afdab2`, branch `deploy/cors-opt-in`). Findings:
+      - `CORS_ORIGINS` fed two different controls: `hono/cors`, and better-auth's `trustedOrigins`
+        (CSRF on the `Origin` header plus redirect-target checks). **CORS was dead config**: no
+        browser calls auth-server or membership-applications cross-origin, locally or in prod.
+        `http://localhost:8000` in the list did nothing.
+      - better-auth **always trusts its base URL's origin** (`context/helpers.mjs:74`, v1.7.2). In
+        prod that's the staff URL, so no extra trusted origins are needed.
+      - A mobile app would need `trustedOrigins` (its app scheme) but never CORS, which is a
+        browser-only mechanism. So the two controls are split.
+      - auth-server: optional `TRUSTED_ORIGINS` (to better-auth) and optional `CORS_ORIGINS`.
+        **Empty `CORS_ORIGINS` means the middleware isn't mounted**, and entries must be bare
+        origins (validated at startup). `baseURL` is now passed explicitly, so better-auth no
+        longer reads `process.env.BETTER_AUTH_URL` itself.
+      - membership-applications: `CORSMiddleware` is mounted only when `CORS_ALLOWED_ORIGINS` is
+        non-empty.
+      - **Prod values: all three empty** (auth-server `TRUSTED_ORIGINS` and `CORS_ORIGINS`,
+        membership-applications `CORS_ALLOWED_ORIGINS`).
+      - Verified locally:
+        - Staff and base-URL origins pass the CSRF check; a foreign origin gets
+          `403 INVALID_ORIGIN`.
+        - With `TRUSTED_ORIGINS` empty, only the base URL origin passes.
+        - Preflights get no CORS headers unless CORS is configured.
+        - A trailing slash in `CORS_ORIGINS` fails startup.
 
 ---
 
@@ -352,6 +379,11 @@ Per repo:
 - [ ] `stop_grace_period: 30s` on auth-server. Compose's default is 10s, which is below
       auth-server's `SHUTDOWN_TIMEOUT_MS` (20s).
 - [ ] Only staff-app publishes a port to the host, to mirror prod (auth/membership internal-only).
+- [ ] **Match prod's `BETTER_AUTH_URL`:** set it to staff-app's origin (`http://localhost:3000`),
+      not auth-server's. Email links and cookies then go through the proxy as in prod, and
+      auth-server's `TRUSTED_ORIGINS` can be empty, as in prod. The JWT `iss`/`aud` change with it,
+      so membership-applications' `JWT_ISSUER`/`JWT_AUDIENCE` move to `:3000` too
+      (`AUTH_SERVER_URL` stays internal).
 - [ ] `.env.example` per service, with real `.env` files gitignored.
 - [ ] Test the whole flow: sign-up → email verification → sign-in → list applications (JWT path).
 
