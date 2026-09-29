@@ -16,11 +16,11 @@ Started: 2026-09-21
 
 **Phase 0 is done. Phase 1 is in progress.** All staff-app items in Phase 1 are done and merged
 to staff-app `main` (runtime `/api/auth` proxy, `AUTH_SERVER_URL` rename, `/api/health`,
-standalone output). auth-server's `build`/`start`/`dev` scripts are done on the auth-server branch
-`deploy/build-scripts` (`e1ce659`, plus a formatting-only `977f54a`), **not merged to `main`
-yet**, and this roadmap's changes are on `docs/phase1-auth-server-build`.
-Resume at the next auth-server item: replace `dotenv` with Node's `--env-file-if-exists` (dev
-only), then graceful shutdown, then production CORS.
+standalone output). auth-server's `build`/`start`/`dev` scripts are merged to auth-server `main`.
+Dev-only `.env` loading (dotenv removed) is done on the auth-server branch `deploy/node-env-file`
+(`cd2445f`, `364e08e`), **not merged to `main` yet**, and this roadmap's changes are on
+`docs/phase1-node-env-file`.
+Resume at the next auth-server item: graceful shutdown, then production CORS.
 
 **How we work (read this at every session start):** the main goal is for the owner to learn, not
 just to ship, so go slowly.
@@ -264,12 +264,24 @@ Service Connect.
         is created with `pnpm dlx auth@latest create-admin` (Phase 6).
       - Known gap: `tsc` never deletes stale files from `dist/`. Docker builds start clean, so
         only local builds are affected.
-- [ ] **auth-server: load `.env` only in dev.** `src/lib/config.ts` does `import 'dotenv/config'`,
-      so the prod code loads a `.env` if one is ever present in the image. Replace it with
-      `--env-file-if-exists=.env` in the `dev` script only (Node 24 built-in; verify that
-      `tsx watch` passes it through to Node), so "prod config comes only from real env vars" is enforced by the
-      code, not just by `.dockerignore`. `drizzle.config.ts` also imports `dotenv/config`
-      (dev tooling only), so decide whether to keep `dotenv` as a devDependency for it.
+- [x] **auth-server: load `.env` only in dev.** `src/lib/config.ts` did `import 'dotenv/config'`,
+      so the prod code would load a `.env` if one were ever present in the image. **Done**
+      (auth-server `cd2445f`, `364e08e`, branch `deploy/node-env-file`). Findings and decisions:
+      - The `dev` script is now `tsx watch --env-file-if-exists=.env src/index.ts` (Node's built-in
+        parser, which dotenv's own README now recommends). Verified: `tsx watch` passes the flag
+        through, and a variable set in the shell beats the file (`PORT=5055` won over `.env`).
+        Strict `--env-file` was rejected: the zod schema already reports missing variables, and
+        the strict flag would break dev runs with only real env vars (compose).
+      - **Verified that prod ignores `.env`:** `pnpm start` with `.env` sitting next to it fails
+        config validation. "Prod config comes only from real env vars" is now enforced by the
+        code, not just by `.dockerignore`.
+      - `drizzle.config.ts` uses `process.loadEnvFile('.env')`, guarded by `existsSync` (it throws
+        `ENOENT` otherwise). drizzle-kit loads the config itself, so the dev script's flag
+        doesn't reach it. Verified with `drizzle-kit check` and `migrate`. In the Phase 2 migrate
+        container there is no `.env`, so real env vars are used. `dotenv` is removed completely.
+        Wrapping drizzle-kit in `node --env-file-if-exists` was rejected (it depends on the
+        package's internal `bin.cjs` path).
+      - `.env` is read once at startup, as it was with dotenv: restart `pnpm dev` after editing it.
 - [ ] **auth-server: graceful shutdown** (its own ROADMAP Phase 6). ECS sends SIGTERM on every
       deploy, so finish this before prod.
 - [ ] Production CORS: auth-server `CORS_ORIGINS` = staff public URL. membership-applications
