@@ -14,13 +14,13 @@ Started: 2026-09-21
 
 ## Where we left off (2026-09-28)
 
-**Phase 0 is done. Phase 1 is in progress.** The staff-app rename and the runtime `/api/auth`
-proxy are done and verified (see [Phase 1](#phase-1--code-changes-needed-before-deployment)).
-**All staff-app items in Phase 1 are done:** runtime `/api/auth` proxy, `AUTH_SERVER_URL`
-rename, `/api/health`, and standalone output. They're on the staff-app branch
-`deploy/runtime-auth-proxy` (`d887739`, `c4cebe9`, `fde6318`), **not merged to `main` yet**, and this
-roadmap's changes are on `docs/phase1-staff-app-progress`. Resume at the auth-server items:
-`build` + `start` scripts, then graceful shutdown, then production CORS.
+**Phase 0 is done. Phase 1 is in progress.** All staff-app items in Phase 1 are done and merged
+to staff-app `main` (runtime `/api/auth` proxy, `AUTH_SERVER_URL` rename, `/api/health`,
+standalone output). auth-server's `build`/`start`/`dev` scripts are done on the auth-server branch
+`deploy/build-scripts` (`e1ce659`, plus a formatting-only `977f54a`), **not merged to `main`
+yet**, and this roadmap's changes are on `docs/phase1-auth-server-build`.
+Resume at the next auth-server item: replace `dotenv` with Node's `--env-file-if-exists` (dev
+only), then graceful shutdown, then production CORS.
 
 **How we work (read this at every session start):** the main goal is for the owner to learn, not
 just to ship, so go slowly.
@@ -240,8 +240,36 @@ Service Connect.
       that outlasts the original one), a good staff-app deploy could be rolled back, and the ALB
       fails open when all targets are unhealthy anyway. Dependency outages belong to monitoring
       (Phase 9).
-- [ ] **auth-server: add `build` + `start` scripts.** The source uses `.js` import specifiers
+- [x] **auth-server: add `build` + `start` scripts.** The source uses `.js` import specifiers
       for `.ts` files, so it needs `tsc` → `dist/` and then `node dist/index.js`.
+      **Done** (auth-server `e1ce659`, branch `deploy/build-scripts`). Findings and decisions:
+      - The server had only ever run under **Bun**, while prod is Node 24. Verified that the `tsc`
+        output runs on Node (all imports resolve, `/api/auth/ok` gives 200, `/health` gives 503
+        with the DB down). **Bun is dropped entirely:** `pnpm dev` is `tsx watch` (Node), so dev
+        runs on the prod runtime.
+      - **`tsc`, not a bundler:** it's already the type-checker, the output maps 1:1 to the
+        source, and a server ships `node_modules` anyway. Node's built-in type stripping was
+        rejected (needs `.ts` import specifiers); `tsx`/`bun` in prod is not standard.
+      - A plain `tsc` emit put output in `dist/src/` (the base tsconfig also includes
+        `drizzle.config.ts`). A separate `tsconfig.build.json` sets `rootDir: src`,
+        `outDir: dist` and turns off declaration files (those are for libraries). The base
+        `tsconfig.json` stays for the editor and `pnpm typecheck`.
+      - `start` is `node --enable-source-maps dist/index.js`, so stack traces in CloudWatch point
+        at `.ts` lines. Verified.
+      - Biome now reuses `.gitignore` (skips `dist/`) and ignores drizzle's generated snapshots.
+        `biome check .` had already been failing on formatting, so that got fixed in a separate
+        formatting-only commit. It still warns about the `!` in `drizzle.config.ts`.
+      - `src/data/seed.ts` was deleted. It inserted a `user` row without an `account` row (where
+        better-auth keeps the password hash), so that user could never sign in. The first admin
+        is created with `pnpm dlx auth@latest create-admin` (Phase 6).
+      - Known gap: `tsc` never deletes stale files from `dist/`. Docker builds start clean, so
+        only local builds are affected.
+- [ ] **auth-server: load `.env` only in dev.** `src/lib/config.ts` does `import 'dotenv/config'`,
+      so the prod code loads a `.env` if one is ever present in the image. Replace it with
+      `--env-file-if-exists=.env` in the `dev` script only (Node 24 built-in; verify that
+      `tsx watch` passes it through to Node), so "prod config comes only from real env vars" is enforced by the
+      code, not just by `.dockerignore`. `drizzle.config.ts` also imports `dotenv/config`
+      (dev tooling only), so decide whether to keep `dotenv` as a devDependency for it.
 - [ ] **auth-server: graceful shutdown** (its own ROADMAP Phase 6). ECS sends SIGTERM on every
       deploy, so finish this before prod.
 - [ ] Production CORS: auth-server `CORS_ORIGINS` = staff public URL. membership-applications
