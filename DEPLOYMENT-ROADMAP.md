@@ -379,10 +379,10 @@ Per repo:
 - [ ] `stop_grace_period: 30s` on auth-server. Compose's default is 10s, which is below
       auth-server's `SHUTDOWN_TIMEOUT_MS` (20s).
 - [ ] Only staff-app publishes a port to the host, to mirror prod (auth/membership internal-only).
-- [ ] **Match prod's `BETTER_AUTH_URL`:** set it to staff-app's origin (`http://localhost:3000`),
+- [ ] **Match prod's `BETTER_AUTH_URL`:** set it to staff-app's origin (`http://localhost:3001`),
       not auth-server's. Email links and cookies then go through the proxy as in prod, and
       auth-server's `TRUSTED_ORIGINS` can be empty, as in prod. The JWT `iss`/`aud` change with it,
-      so membership-applications' `JWT_ISSUER`/`JWT_AUDIENCE` move to `:3000` too
+      so membership-applications' `JWT_ISSUER`/`JWT_AUDIENCE` move to `:3001` too
       (`AUTH_SERVER_URL` stays internal).
 - [ ] `.env.example` per service, with real `.env` files gitignored.
 - [ ] Test the whole flow: sign-up → email verification → sign-in → list applications (JWT path).
