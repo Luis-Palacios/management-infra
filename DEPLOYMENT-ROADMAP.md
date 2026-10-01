@@ -23,9 +23,10 @@ Phase 2 and Phase 6) → membership-applications → staff-app.
 **Next session starts here:**
 - **auth-server `.dockerignore`: done** (auth-server `59a6c70`, branch `deploy/dockerfile`).
   Context verified: 21 files, 252 KB, no `.env`/`.git`/`node_modules`.
-- **auth-server `Dockerfile`: not started** (same `deploy/dockerfile` branch). The owner writes it from the brief in the auth-server
-  item under Phase 2 below. Then Claude reviews it and tests it: image size, `docker run` with env
-  vars, and `docker stop` → SIGTERM handler → exit `0`.
+- **auth-server `Dockerfile`: done** (auth-server `55d933f`, plus `03fb44a` for the drizzle-kit
+  leak; both on `deploy/dockerfile`). Verified: a 320 MB image, `node` as PID 1 running as uid 1000,
+  and `docker stop` → SIGTERM handler → exit `0`. **Next: `src/migrate.ts` + `set-role.ts`**
+  (Phase 2/6). Copy `drizzle/` into the runtime stage in the same commit as `migrate.ts`.
 - **How to check the build context:** build a throwaway image whose Dockerfile is
   `FROM busybox`, `COPY . /ctx`, `RUN find /ctx -type f`, using
   `docker build --no-cache --progress=plain -f <that file> <repo>`. It lists exactly what the
@@ -375,7 +376,24 @@ Per repo:
       the Debian version `python:3.14-slim` is based on. Entry point:
       `python -m membership_applications.api.run`, `WORKERS=1` (scale with tasks instead).
       Azure SQL needs `Encrypt=yes` in the connection string.
-- [~] **auth-server**: `.dockerignore` is done (`59a6c70`); the Dockerfile is next.
+- [~] **auth-server**: `.dockerignore` (`59a6c70`) and the Dockerfile (`55d933f`) are done;
+      `migrate.ts` + `set-role.ts` are next. Dockerfile decisions and findings:
+      - **Alpine, not slim:** ~90 MB smaller. Node on musl is "Experimental" tier, which is
+        acceptable because no runtime dependency is a native addon. Switch to `-slim` if one breaks.
+      - **Pinned exactly** (`24.21.0`, Alpine `3.24`). A floating tag only changes when you
+        rebuild and pull, and then the change arrives untested. Bumps should come as their own
+        commits (Dependabot/Renovate, Phase 10).
+      - pnpm comes from `npm i -g` and lives only in the build stages. `ARG PNPM_VERSION` must
+        match `packageManager`.
+      - **drizzle-kit leak (found by measuring):** better-auth declares `drizzle-kit` as an
+        optional peer and never imports it. pnpm satisfied that peer with our devDependency, so
+        `--prod` shipped drizzle-kit and esbuild (~105 MB). Fixed with a `readPackage` hook in
+        `.pnpmfile.cjs` (`03fb44a`). A scoped `overrides` entry was tried first and doesn't affect
+        peers. The lockfile records the hook's checksum, so the build fails with
+        `ERR_PNPM_LOCKFILE_CONFIG_MISMATCH` if `.pnpmfile.cjs` isn't mounted. Phase 10 idea: fail
+        CI if `pnpm why drizzle-kit --prod` returns anything.
+      - Results: image 466 → 320 MB, prod `node_modules` 179 → 68 MB.
+
       **Brief for the owner.** Use three stages:
       - `build`: all deps with `pnpm install --frozen-lockfile`, then `pnpm build`.
       - `prod-deps`: `--prod` install.
