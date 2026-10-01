@@ -12,16 +12,24 @@ Started: 2026-09-21
 
 ---
 
-## Where we left off (2026-09-28)
+## Where we left off (2026-10-01)
 
-**Phases 0 and 1 are done. Next is Phase 2 (Dockerfiles).** All staff-app items in Phase 1 are
-merged to staff-app `main`, and auth-server's `build`/`start`/`dev` scripts are merged to
-auth-server `main`. **Still to merge:**
-- auth-server: three **stacked** branches, merged in this order: `deploy/node-env-file`
-  (`cd2445f`, `364e08e`), then `deploy/graceful-shutdown` (`e8aa9ea`, `e507891`), then
-  `deploy/split-origins` (`feee555`).
-- membership-applications: `deploy/cors-opt-in` (`3afdab2`).
-- This roadmap's changes are on `docs/phase1-node-env-file`.
+**Phases 0 and 1 are done and merged to `main` in every repo** (checked 2026-09-30; the old
+`deploy/*` and `docs/*` branches were rebase-merged, so git still lists them as unmerged; they can
+be deleted). **Phase 2 is in progress, starting with auth-server.** The owner writes the files and
+Claude reviews them. Order: `.dockerignore` → `Dockerfile` → `migrate.ts` + `set-role.ts` (see
+Phase 2 and Phase 6) → membership-applications → staff-app.
+
+**Next session starts here:**
+- **auth-server `.dockerignore`: done** (auth-server `59a6c70`, branch `deploy/dockerfile`).
+  Context verified: 21 files, 252 KB, no `.env`/`.git`/`node_modules`.
+- **auth-server `Dockerfile`: not started** (same `deploy/dockerfile` branch). The owner writes it from the brief in the auth-server
+  item under Phase 2 below. Then Claude reviews it and tests it: image size, `docker run` with env
+  vars, and `docker stop` → SIGTERM handler → exit `0`.
+- **How to check the build context:** build a throwaway image whose Dockerfile is
+  `FROM busybox`, `COPY . /ctx`, `RUN find /ctx -type f`, using
+  `docker build --no-cache --progress=plain -f <that file> <repo>`. It lists exactly what the
+  `.dockerignore` lets through. Use it for the other two repos too.
 
 **How we work (read this at every session start):** the main goal is for the owner to learn, not
 just to ship, so go slowly.
@@ -333,7 +341,7 @@ Service Connect.
 ---
 
 ## Phase 2 — Dockerfiles (one per app repo)
-`[ ]`
+`[~]`
 
 Besides the `Dockerfile` itself, each repo needs:
 
@@ -343,7 +351,22 @@ Besides the `Dockerfile` itself, each repo needs:
 - **Non-root user** in the runtime stage.
 - **Config only through env vars at runtime**, never `.env` files inside the image.
 - **Pinned base images** (e.g. `node:24-slim`, `python:3.14-slim`), and later pinned by digest.
-- **Target `linux/arm64`** too: Fargate on Graviton is ~20% cheaper.
+- **Target `linux/arm64`** too: Fargate on Graviton is ~20% cheaper. The local Docker Desktop is
+  `linux/amd64`, so arm64 builds here are emulated (QEMU) and slow.
+
+**`.dockerignore` lessons (from auth-server):**
+- Docker has **no default ignores** and doesn't read `.gitignore`. Without the file, `.git` and
+  `.env` are sent.
+- Patterns are **anchored to the context root**, and `*` doesn't cross `/`. `*.md` only matches
+  the root, so use `**/*.md` for any depth. This differs from `.gitignore`.
+- It's a denylist (the owner's choice: more common and easier to read), so secrets get the broadest
+  patterns.
+- Every line should match something real in the repo, so no template leftovers.
+- Keeping `.ts` out of the *final image* is the multi-stage build's job, not `.dockerignore`'s:
+  the build needs the `.ts` files.
+- `.git` is excluded because it holds the full history (including deleted secrets) and busts the
+  layer cache. If the app needs the SHA, pass it as a build arg.
+- auth-server's context is 21 files, 252 KB (it was 2.5 MB).
 
 Per repo:
 
@@ -352,12 +375,38 @@ Per repo:
       the Debian version `python:3.14-slim` is based on. Entry point:
       `python -m membership_applications.api.run`, `WORKERS=1` (scale with tasks instead).
       Azure SQL needs `Encrypt=yes` in the connection string.
-- [ ] **auth-server**: pnpm install → `tsc` build → runtime with prod deps only. Use
+- [~] **auth-server**: `.dockerignore` is done (`59a6c70`); the Dockerfile is next.
+      **Brief for the owner.** Use three stages:
+      - `build`: all deps with `pnpm install --frozen-lockfile`, then `pnpm build`.
+      - `prod-deps`: `--prod` install.
+      - `runtime`: a clean base with prod `node_modules`, `dist/`, `drizzle/` (needed at run time by
+        `migrate.js`) and `package.json` (for `"type": "module"`).
+
+      Decisions to make, each with a reason:
+      - How specific the base image tag is (`24` / `24.21` / `24.21.0`), and slim vs alpine (musl)
+        vs distroless (no shell).
+      - How pnpm 12.3.4 gets into the image: corepack (does Node 24 still ship it?) or
+        `npm i -g pnpm@12.3.4`. It must match the lockfile.
+      - Layer order: `COPY` the manifests before the install, so editing `src/` doesn't reinstall
+        everything.
+      - Non-root `USER node`, `ENV NODE_ENV=production`, `EXPOSE 5000`.
+      - Be able to explain why the shell form or `pnpm start` breaks graceful shutdown.
+
+      Original item: pnpm install → `tsc` build → runtime with prod deps only. Use
       `CMD ["node", "--enable-source-maps", "dist/index.js"]` (exec form, node as PID 1), **not**
-      `pnpm start`, so SIGTERM reaches the app's shutdown handler. **Migrations**:
-      `drizzle-kit` is a dev dependency, so either build a separate `migrate` target in the same
-      Dockerfile or use drizzle's runtime `migrate()` function. Run it as a **one-off ECS task**
-      before deploying, not on app startup.
+      `pnpm start`, so SIGTERM reaches the app's shutdown handler. **Migrations (decided
+      2026-09-30): drizzle-orm's runtime `migrate()` in `src/migrate.ts` → `dist/migrate.js`, in the
+      same image** (one image, several commands; the Rails/Django pattern). Rejected: a separate
+      `migrate` build target running `drizzle-kit`, which means two images to keep in step and dev
+      tooling in a prod-adjacent image. Run it as a **one-off ECS task** before deploying, not on
+      app startup (with 2+ tasks, migrations race, and a failed one turns into a crash loop).
+      Trade-offs we accepted:
+      - Two runners (`drizzle-kit migrate` locally, `migrate()` in prod) must agree on
+        `__drizzle_migrations`. **Verify that before relying on it**, and always upgrade
+        `drizzle-orm` and `drizzle-kit` together.
+      - Migrations need DDL rights and the app user doesn't have them (Phase 6). `run-task` overrides
+        can't change `secrets:`, so the migrate task needs its **own task definition**
+        (`auth-server-migrate`: same image, owner-level `DATABASE_URL`).
 - [ ] **staff-app**: Next.js standalone output → `node server.js`. Copy `.next/static` →
       `.next/standalone/.next/static` and `public` → `.next/standalone/public`, and set
       `ENV HOSTNAME=0.0.0.0`. Add a **post-build smoke test** (in CI or a script): run the image,
@@ -423,6 +472,14 @@ Per repo:
 - [ ] Master password managed in Secrets Manager (RDS can do this for you).
 - [ ] App user with limited privileges (don't run the app as master).
 - [ ] Run migrations (one-off ECS task), then create the admin user.
+      **Admin approach (decided 2026-09-30):** a one-off admin process from the same image
+      (12-factor XII). The person signs up normally in staff-app (they choose their own password and
+      get the `pending` role), then a one-off task runs `node dist/scripts/set-role.js <email> admin`.
+      The same command is the break-glass fix if every admin is lost. No password ever goes through
+      a CLI argument, an env var, the task definition or the logs. Extra admins and elders come
+      through the existing invite flow in staff-app. Not `pnpm dlx auth@latest create-admin` in
+      prod: it downloads an unpinned npm package at run time and prompts for input interactively.
+      ECS Exec is a debugging tool, not the routine path.
 - [ ] **Test a restore** once. A backup you've never restored doesn't count.
 
 ---
