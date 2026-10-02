@@ -20,17 +20,29 @@ be deleted). **Phase 2 is in progress, starting with auth-server.** The owner wr
 Claude reviews them. Order: `.dockerignore` → `Dockerfile` → `migrate.ts` + `set-role.ts` (see
 Phase 2 and Phase 6) → membership-applications → staff-app.
 
-**Next session starts here:**
-- **auth-server `.dockerignore`: done** (auth-server `59a6c70`, branch `deploy/dockerfile`).
-  Context verified: 21 files, 252 KB, no `.env`/`.git`/`node_modules`.
-- **auth-server `Dockerfile`: done** (auth-server `55d933f`, plus `03fb44a` for the drizzle-kit
-  leak; both on `deploy/dockerfile`). Verified: a 320 MB image, `node` as PID 1 running as uid 1000,
-  and `docker stop` → SIGTERM handler → exit `0`. **Next: `src/migrate.ts` + `set-role.ts`**
-  (Phase 2/6). Copy `drizzle/` into the runtime stage in the same commit as `migrate.ts`.
+**Next session starts here: auth-server `src/scripts/set-role.ts`** (the brief and open questions
+are in the auth-server item under Phase 2). The owner writes it; Claude explains first, then reviews
+and tests from the Docker image.
+
+State of branches (nothing below is merged yet):
+- **auth-server `deploy/dockerfile`** (on top of `main`), all done and tested:
+  `59a6c70` `.dockerignore` · `03fb44a` `.pnpmfile.cjs` (drizzle-kit leak) · `55d933f` `Dockerfile` ·
+  `59800e7` `src/migrate.ts` + `COPY drizzle` · `6b21463` `.gitattributes` (LF) · `b456fde` docs
+  (CLAUDE.md/ROADMAP.md). set-role goes on this same branch; merge it after that.
+- **management-infra `docs/phase-2-auth-dockerfile`**: this roadmap's updates.
+- **Line endings:** auth-server now enforces LF with `.gitattributes`. membership-applications
+  (9 CRLF files) and staff-app (15) don't have one yet. Add it there (with
+  `git add --renormalize .`, as its own commit) when Phase 2 reaches those repos.
+
+Useful checks:
 - **How to check the build context:** build a throwaway image whose Dockerfile is
   `FROM busybox`, `COPY . /ctx`, `RUN find /ctx -type f`, using
   `docker build --no-cache --progress=plain -f <that file> <repo>`. It lists exactly what the
   `.dockerignore` lets through. Use it for the other two repos too.
+- **How to run the image against local Postgres** (container `my-postgres`, port 5432): replace
+  `localhost` with `host.docker.internal` in `DATABASE_URL`, e.g.
+  `docker run --rm -e DATABASE_URL=postgresql://user:pass@host.docker.internal:5432/db auth-server:dev node dist/migrate.js`.
+  For a throwaway DB: `docker exec my-postgres psql -U <user> -d postgres -c "create database x"`.
 
 **How we work (read this at every session start):** the main goal is for the owner to learn, not
 just to ship, so go slowly.
@@ -376,8 +388,8 @@ Per repo:
       the Debian version `python:3.14-slim` is based on. Entry point:
       `python -m membership_applications.api.run`, `WORKERS=1` (scale with tasks instead).
       Azure SQL needs `Encrypt=yes` in the connection string.
-- [~] **auth-server**: `.dockerignore` (`59a6c70`) and the Dockerfile (`55d933f`) are done;
-      `migrate.ts` + `set-role.ts` are next. Dockerfile decisions and findings:
+- [~] **auth-server**: `.dockerignore` (`59a6c70`), Dockerfile (`55d933f`) and `migrate.ts`
+      (`59800e7`) are done; **`set-role.ts` is next** (brief below). Dockerfile decisions and findings:
       - **Alpine, not slim:** ~90 MB smaller. Node on musl is "Experimental" tier, which is
         acceptable because no runtime dependency is a native addon. Switch to `-slim` if one breaks.
       - **Pinned exactly** (`24.21.0`, Alpine `3.24`). A floating tag only changes when you
@@ -390,9 +402,52 @@ Per repo:
         `--prod` shipped drizzle-kit and esbuild (~105 MB). Fixed with a `readPackage` hook in
         `.pnpmfile.cjs` (`03fb44a`). A scoped `overrides` entry was tried first and doesn't affect
         peers. The lockfile records the hook's checksum, so the build fails with
-        `ERR_PNPM_LOCKFILE_CONFIG_MISMATCH` if `.pnpmfile.cjs` isn't mounted. Phase 10 idea: fail
-        CI if `pnpm why drizzle-kit --prod` returns anything.
+        `ERR_PNPM_LOCKFILE_CONFIG_MISMATCH` if `.pnpmfile.cjs` isn't mounted.
       - Results: image 466 → 320 MB, prod `node_modules` 179 → 68 MB.
+
+      **`migrate.ts` (`59800e7`), decisions and findings:**
+      - **The two runners agree (verified 2026-10-01):** `drizzle-kit migrate` imports
+        `drizzle-orm/node-postgres/migrator`, the same `migrate()`. Same `drizzle.__drizzle_migrations`
+        table, same SHA-256 hashes. Run against the DB drizzle-kit had migrated, it applied nothing.
+      - drizzle v1 picks pending migrations **by folder name**, not by timestamp, so a migration
+        generated earlier but merged later still runs. All pending migrations run in **one
+        transaction**.
+      - Doesn't import `lib/config.ts`: the migrate task gets only `DATABASE_URL`.
+      - One `pg.Client`. `pg_advisory_lock` comes first (a second run waits), then
+        `SET lock_timeout = '10s'` (a blocked `ALTER` fails fast instead of queueing the app's
+        queries behind it). The order matters, because `lock_timeout` also applies to advisory locks.
+        Advisory locks are per database.
+      - No SIGTERM handler: if the task is killed, Postgres rolls back and releases the lock.
+      - Tested from the image: no-op on an up-to-date DB, full apply on a fresh DB, rerun is a
+        no-op, waits while another session holds the lock, two simultaneous runs apply each
+        migration once, and an unreachable DB or missing `DATABASE_URL` gives exit `1` (no hang).
+        **Not yet tested:** `lock_timeout` actually firing. Do that with the next real migration.
+      - The lock only serializes runs. Order and compatibility belong to the pipeline (Phase 10,
+        "Migration safety").
+
+      **Brief for `set-role.ts` (next session).** Goal (decided 2026-09-30, see Phase 6): the first
+      admin signs up normally in staff-app (role `pending`), then a one-off task runs
+      `node dist/scripts/set-role.js <email> <role>`. It's also the break-glass fix if every admin is
+      lost. Valid roles are the keys in `src/lib/auth.ts`'s admin plugin `roles`: `admin`, `elder`,
+      `deacon`, `smallGroupLeader`, `user`, `pending`.
+      Decide each of these with a reason:
+      - **better-auth API vs a direct `UPDATE user SET role`.** `auth.api.setRole` expects an admin
+        session, which a break-glass script doesn't have. A direct update skips better-auth hooks.
+        The "never raw inserts" rule in auth-server's CLAUDE.md is about *creating* users (the
+        password hash lives in `account`), but check whether that reasoning applies to updates too.
+      - **What it imports.** `lib/auth.ts` pulls in `lib/config.ts`, which needs every app secret.
+        Can the role list come from `permissions/statements.ts` or a shared constant, so the script
+        needs only `DATABASE_URL` like `migrate.ts`?
+      - **Which DB user.** Changing a role is DML, so the app user should be enough (unlike migrate,
+        which needs the owner user). That decides which task definition runs it.
+      - **Existing sessions and JWTs.** After the change, when does the user actually get the new
+        role: better-auth's session/cookie cache, and the `role` claim in JWTs that are already
+        issued (membership-applications trusts the claim until the token expires)? For a
+        *demotion* this matters for security: should the script revoke the user's sessions?
+      - **Exit codes and output:** user not found → `1`, invalid role → `1`. Log old → new role,
+        which becomes the audit record in CloudWatch.
+      - **Where it lives:** `src/scripts/` → `dist/scripts/set-role.js` (already covered by
+        `tsconfig.build.json`'s `src/**/*`).
 
       **Brief for the owner.** Use three stages:
       - `build`: all deps with `pnpm install --frozen-lockfile`, then `pnpm build`.
@@ -420,7 +475,7 @@ Per repo:
       app startup (with 2+ tasks, migrations race, and a failed one turns into a crash loop).
       Trade-offs we accepted:
       - Two runners (`drizzle-kit migrate` locally, `migrate()` in prod) must agree on
-        `__drizzle_migrations`. **Verify that before relying on it**, and always upgrade
+        `__drizzle_migrations`. **Verified 2026-10-01** (same code path, see above). Always upgrade
         `drizzle-orm` and `drizzle-kit` together.
       - Migrations need DDL rights and the app user doesn't have them (Phase 6). `run-task` overrides
         can't change `secrets:`, so the migrate task needs its **own task definition**
@@ -602,6 +657,19 @@ which client-IP headers you can trust.
 - [ ] **GitHub OIDC → IAM role** (no long-lived AWS keys in GitHub secrets). Scope the role's
       trust to `repo:Luis-Palacios/<repo>:ref:refs/heads/main`.
 - [ ] Optional: GitHub `production` environment with required approval.
+- [ ] **Migration safety in the pipeline.** migrate.ts's advisory lock only prevents two runs from
+      applying the same migration at once. It doesn't decide order, and it doesn't check that two
+      PRs' migrations make sense together.
+  - [ ] `concurrency:` group on the deploy workflow (queue, don't cancel), so deploys can't finish
+        out of order (an older image going live after a newer commit's migration).
+  - [ ] Branch protection: **require branches to be up to date before merging** (a merge queue on
+        bigger teams). A PR with a migration is then rebased onto the other PR's migration and
+        re-tested, and gets its migration regenerated if the `prevIds` snapshot chain forked.
+  - [ ] CI applies every migration to a fresh Postgres and runs `drizzle-kit check`. Untested so
+        far: how v1 reports two snapshots with the same parent.
+  - [ ] Convention: expand/contract (backward-compatible) migrations, so the running old code
+        always works with the new schema.
+  - [ ] Fail CI if `pnpm why drizzle-kit --prod` returns anything (see the drizzle-kit leak, Phase 2).
 
 ---
 
