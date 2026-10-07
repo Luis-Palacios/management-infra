@@ -29,7 +29,8 @@ State of branches:
   `.dockerignore` · `03fb44a` `.pnpmfile.cjs` (drizzle-kit leak) · `55d933f` `Dockerfile` · `59800e7`
   `src/migrate.ts` + `COPY drizzle` · `6b21463` `.gitattributes` (LF) · `b456fde` docs · `b42ff0d`
   `roles` export · `0d4ff3f` `set-role.ts` · `82e6d9e` `.editorconfig` · `2b4e1c6`
-  `drizzle.config.ts` `DATABASE_URL` check · `c9a5c61` docs (set-role replaces `create-admin`).
+  `drizzle.config.ts` `DATABASE_URL` check · `c9a5c61` docs (set-role) · `774505e` docs
+  (`create-admin` kept as the local-dev shortcut).
 - **management-infra `docs/phase-2-auth-dockerfile`**: this roadmap's updates.
 - **Line endings:** auth-server enforces LF with `.gitattributes` (what Git stores) **and**
   `.editorconfig` (what the editor creates; needs `root = true` and a `[*]` section, or it's
