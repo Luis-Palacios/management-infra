@@ -12,27 +12,32 @@ Started: 2026-09-21
 
 ---
 
-## Where we left off (2026-10-01)
+## Where we left off (2026-10-07)
 
 **Phases 0 and 1 are done and merged to `main` in every repo** (checked 2026-09-30; the old
 `deploy/*` and `docs/*` branches were rebase-merged, so git still lists them as unmerged; they can
-be deleted). **Phase 2 is in progress, starting with auth-server.** The owner writes the files and
-Claude reviews them. Order: `.dockerignore` → `Dockerfile` → `migrate.ts` + `set-role.ts` (see
-Phase 2 and Phase 6) → membership-applications → staff-app.
+be deleted). **Phase 2: auth-server is done** (PR below, waiting for the owner to merge). Order for
+the rest: membership-applications → staff-app.
 
-**Next session starts here: auth-server `src/scripts/set-role.ts`** (the brief and open questions
-are in the auth-server item under Phase 2). The owner writes it; Claude explains first, then reviews
-and tests from the Docker image.
+**Next session starts here: membership-applications `.dockerignore`**, then its Dockerfile (see the
+membership-applications item under Phase 2). Same way of working: Claude explains, the owner writes,
+Claude reviews and tests from the image. Use the build-context check below on it first.
 
-State of branches (nothing below is merged yet):
-- **auth-server `deploy/dockerfile`** (on top of `main`), all done and tested:
-  `59a6c70` `.dockerignore` · `03fb44a` `.pnpmfile.cjs` (drizzle-kit leak) · `55d933f` `Dockerfile` ·
-  `59800e7` `src/migrate.ts` + `COPY drizzle` · `6b21463` `.gitattributes` (LF) · `b456fde` docs
-  (CLAUDE.md/ROADMAP.md). set-role goes on this same branch; merge it after that.
+State of branches:
+- **auth-server `deploy/dockerfile`** → [PR #18](https://github.com/Luis-Palacios/auth-server/pull/18)
+  (closes #17), all done and tested. Merge it, then delete the branch. Commits: `59a6c70`
+  `.dockerignore` · `03fb44a` `.pnpmfile.cjs` (drizzle-kit leak) · `55d933f` `Dockerfile` · `59800e7`
+  `src/migrate.ts` + `COPY drizzle` · `6b21463` `.gitattributes` (LF) · `b456fde` docs · `b42ff0d`
+  `roles` export · `0d4ff3f` `set-role.ts` · `82e6d9e` `.editorconfig` · `2b4e1c6`
+  `drizzle.config.ts` `DATABASE_URL` check · `c9a5c61` docs (set-role replaces `create-admin`).
 - **management-infra `docs/phase-2-auth-dockerfile`**: this roadmap's updates.
-- **Line endings:** auth-server now enforces LF with `.gitattributes`. membership-applications
-  (9 CRLF files) and staff-app (15) don't have one yet. Add it there (with
-  `git add --renormalize .`, as its own commit) when Phase 2 reaches those repos.
+- **Line endings:** auth-server enforces LF with `.gitattributes` (what Git stores) **and**
+  `.editorconfig` (what the editor creates; needs `root = true` and a `[*]` section, or it's
+  silently ignored). membership-applications (9 CRLF files) and staff-app (15) have neither yet. Add
+  both there (`.gitattributes` with `git add --renormalize .`, as its own commit) when Phase 2
+  reaches those repos. Lesson: VS Code on Windows creates CRLF files by default, and the Biome VS
+  Code extension shows only lint diagnostics, never formatting differences, so CRLF shows up only in
+  `biome check` on the CLI.
 
 Useful checks:
 - **How to check the build context:** build a throwaway image whose Dockerfile is
@@ -388,8 +393,9 @@ Per repo:
       the Debian version `python:3.14-slim` is based on. Entry point:
       `python -m membership_applications.api.run`, `WORKERS=1` (scale with tasks instead).
       Azure SQL needs `Encrypt=yes` in the connection string.
-- [~] **auth-server**: `.dockerignore` (`59a6c70`), Dockerfile (`55d933f`) and `migrate.ts`
-      (`59800e7`) are done; **`set-role.ts` is next** (brief below). Dockerfile decisions and findings:
+- [x] **auth-server**: `.dockerignore` (`59a6c70`), Dockerfile (`55d933f`), `migrate.ts`
+      (`59800e7`) and `set-role.ts` (`0d4ff3f`) are done, in
+      [PR #18](https://github.com/Luis-Palacios/auth-server/pull/18). Dockerfile decisions and findings:
       - **Alpine, not slim:** ~90 MB smaller. Node on musl is "Experimental" tier, which is
         acceptable because no runtime dependency is a native addon. Switch to `-slim` if one breaks.
       - **Pinned exactly** (`24.21.0`, Alpine `3.24`). A floating tag only changes when you
@@ -425,29 +431,43 @@ Per repo:
       - The lock only serializes runs. Order and compatibility belong to the pipeline (Phase 10,
         "Migration safety").
 
-      **Brief for `set-role.ts` (next session).** Goal (decided 2026-09-30, see Phase 6): the first
-      admin signs up normally in staff-app (role `pending`), then a one-off task runs
-      `node dist/scripts/set-role.js <email> <role>`. It's also the break-glass fix if every admin is
-      lost. Valid roles are the keys in `src/lib/auth.ts`'s admin plugin `roles`: `admin`, `elder`,
-      `deacon`, `smallGroupLeader`, `user`, `pending`.
-      Decide each of these with a reason:
-      - **better-auth API vs a direct `UPDATE user SET role`.** `auth.api.setRole` expects an admin
-        session, which a break-glass script doesn't have. A direct update skips better-auth hooks.
-        The "never raw inserts" rule in auth-server's CLAUDE.md is about *creating* users (the
-        password hash lives in `account`), but check whether that reasoning applies to updates too.
-      - **What it imports.** `lib/auth.ts` pulls in `lib/config.ts`, which needs every app secret.
-        Can the role list come from `permissions/statements.ts` or a shared constant, so the script
-        needs only `DATABASE_URL` like `migrate.ts`?
-      - **Which DB user.** Changing a role is DML, so the app user should be enough (unlike migrate,
-        which needs the owner user). That decides which task definition runs it.
-      - **Existing sessions and JWTs.** After the change, when does the user actually get the new
-        role: better-auth's session/cookie cache, and the `role` claim in JWTs that are already
-        issued (membership-applications trusts the claim until the token expires)? For a
-        *demotion* this matters for security: should the script revoke the user's sessions?
-      - **Exit codes and output:** user not found → `1`, invalid role → `1`. Log old → new role,
-        which becomes the audit record in CloudWatch.
-      - **Where it lives:** `src/scripts/` → `dist/scripts/set-role.js` (already covered by
-        `tsconfig.build.json`'s `src/**/*`).
+      **`set-role.ts` (`0d4ff3f`), decisions and findings (2026-10-07):**
+      `node dist/scripts/set-role.js <email> <role>`; the first admin signs up normally in staff-app
+      (role `pending`), then this promotes them. It's also the break-glass fix if every admin is lost.
+      - **Direct drizzle update, not better-auth.** `auth.api.setRole` runs `adminMiddleware` with
+        `requireHeaders` (needs an admin session). `internalAdapter.updateUser` would work but means
+        importing `lib/auth.ts` → `config.ts` → every secret. The "never raw inserts" rule protects the
+        `account` row with the password hash, which a role change doesn't touch. Cost: better-auth's
+        `databaseHooks` don't run (none configured; noted in the script and CLAUDE.md). Deciding
+        argument: a break-glass tool should work even when the app's config is broken.
+      - **Imports:** only `auth-schema.ts` and `permissions/statements.ts`, which now exports one
+        `roles` map shared with the admin plugin (`b42ff0d`). Validated with `Object.hasOwn`, because
+        `in` walks the prototype chain (`toString` would pass). Verified: runs with only
+        `DATABASE_URL`.
+      - **DB user:** the app user (DML only), so it runs from the normal `auth-server` task definition
+        with a command override, not `auth-server-migrate`. That task definition injects all secrets
+        anyway; the benefit of not importing config is robustness, not hiding secrets.
+      - **When the new role applies:** `session.cookieCache` is off, so `getSession` reads the user row
+        on every request and the change is immediate. staff-app mints a fresh JWT on every call, so
+        membership-applications sees it on the next call; a token already copied elsewhere keeps the
+        old role until it expires (15 min default).
+      - **No session revocation** (owner's decision: the script is for promoting the first admin and
+        break-glass). Accepted gap: if admins were lost *because an account was compromised*, the
+        script can promote a new admin but doesn't kick the attacker out. The new admin then bans the
+        compromised account from staff-app (ban revokes its sessions).
+      - **Refuses unverified accounts** (exit `1`), so a typo'd or squatted address can't be promoted.
+        Emails are trimmed and lowercased, because better-auth stores them lowercased.
+      - **Read and write in one transaction with `SELECT ... FOR UPDATE`**, so the logged old role is
+        correct even if someone changes the role at the same time. The log line is written only after
+        the commit; it's the audit record (who ran it is in CloudTrail, `ecs:RunTask`).
+      - **Exit codes:** `0` changed or already that role (idempotent), `1` failure at run time (not
+        found, unverified, DB error), `2` usage error (Unix convention).
+      - **Tested from the image** against a throwaway DB: every exit path above, a `null` old role,
+        mixed-case input, an unreachable DB (no hang), and a concurrent row lock (it waited about 6s and
+        logged the other session's role as the old one).
+      - **Found along the way:** the admin plugin types `defaultRole` as a plain `string`, so
+        `defaultRole: 'nope'` compiles and every new sign-up would get an undefined role. Small
+        hardening item, not done: `defaultRole: 'pending' satisfies keyof typeof roles`.
 
       **Brief for the owner.** Use three stages:
       - `build`: all deps with `pnpm install --frozen-lockfile`, then `pnpm build`.
@@ -552,7 +572,8 @@ Per repo:
       a CLI argument, an env var, the task definition or the logs. Extra admins and elders come
       through the existing invite flow in staff-app. Not `pnpm dlx auth@latest create-admin` in
       prod: it downloads an unpinned npm package at run time and prompts for input interactively.
-      ECS Exec is a debugging tool, not the routine path.
+      ECS Exec is a debugging tool, not the routine path. **Built** (auth-server `0d4ff3f`, see
+      Phase 2). The person must have verified their email first, or the script refuses (exit `1`).
 - [ ] **Test a restore** once. A backup you've never restored doesn't count.
 
 ---
