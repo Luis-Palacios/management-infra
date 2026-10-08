@@ -25,7 +25,9 @@ staff-app's groundwork is merged: line endings
 they can be deleted.
 
 **Next session starts here: the staff-app Dockerfile** (see the staff-app item in Phase 2, and
-auth-server's Dockerfile for the pnpm pattern). Same way of working: Claude explains, the owner
+auth-server's Dockerfile for the pnpm pattern). Decided: alpine; env validated lazily
+([PR #33](https://github.com/Luis-Palacios/staff-app/pull/33), merge it first), so the build
+needs no env vars. Same way of working: Claude explains, the owner
 writes (or asks Claude to, with a preview of each change first), Claude reviews and tests from the
 image.
 
@@ -251,7 +253,7 @@ Service Connect.
       invalid config fails the ALB health check (a *readiness* check) and the ALB never sends
       traffic to that task. This is explicit and doesn't depend on Next's lazy `prepare()`. The
       trade-off is a weaker ECS signal ("failed ELB health checks" rather than "container exited").
-      Rule: **any new config module must be imported by `/api/health`**. Rejected alternatives:
+      Rule: **any new config module must be imported by `/api/health`** (since staff-app PR #33: its `getEnv()`-style getter must be *called* there, see Phase 2). Rejected alternatives:
       `register()` + `process.exit(1)` (depends on Next internals), and a preflight script in the
       Docker `CMD` (the only truly boot-time option, but it duplicates the TS schema; can revisit in
       Phase 2).
@@ -595,6 +597,23 @@ Per repo:
         - Kept: `pnpm-workspace.yaml` (its `allowBuilds` lets `sharp`, `oxide` and `unrs-resolver`
           run install scripts, so the image gets Linux binaries), `public/`, the lockfile and the
           configs `next build` reads.
+      - **Base: alpine (decided 2026-10-08).** Probe builds on `node:24.21.0`: alpine 211 MB vs
+        trixie-slim 274 MB. Unlike auth-server, there *is* a native runtime module: `sharp` (from
+        `next`), the only `.node` file in the standalone output, used by `/_next/image` (always
+        exposed, even though the app doesn't use `next/image`). Its musl build loaded and encoded a
+        PNG in the alpine image (from Next's own `node_modules`, not resolvable from `/app`). The
+        smoke test should also request one `/_next/image` URL, so a broken `sharp` fails it; if it
+        ever breaks on musl, switch to `-slim`. arm64 untested (Phase 4).
+      - **Build without runtime config:** `next build` imports every route module ("Collecting page
+        data"), and `lib/env/server.ts` validated on import, so the build failed with no env.
+        Fixed with a lazy, cached `getEnv()`
+        ([PR #33](https://github.com/Luis-Palacios/staff-app/pull/33)); verified: build with no env
+        passes; at runtime no/invalid env → health 500, valid → 200 and `/api/auth/*` proxied.
+        Rejected: placeholder values in the build `RUN` (tested: no leak today, but only because no
+        page prerenders with env; that's how the `rewrites()` bug happened) and
+        `SKIP_ENV_VALIDATION`/`NEXT_PHASE` (same silent risk).
+      - Noticed: npm 11.19 warns that the global `pnpm` install's install scripts aren't covered
+        by `allowScripts` (auth-server too). pnpm works; look at it while writing the Dockerfile.
 
 **New concepts:** layers & caching, multi-stage builds, image size, build args vs runtime env.
 
