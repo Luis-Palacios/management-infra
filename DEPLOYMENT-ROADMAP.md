@@ -14,25 +14,25 @@ Started: 2026-09-21
 
 ## Where we left off (2026-10-08)
 
-**Phases 0 and 1 are done and merged to `main` in every repo.** **Phase 2: auth-server is done and
-merged** ([PR #18](https://github.com/Luis-Palacios/auth-server/pull/18)). **membership-applications
-is done** (PR below, waiting for the owner to merge). Old local `deploy/*`, `docs/*` and `feature/*`
-branches in all four repos were rebase-merged, so git still lists them as unmerged; they can be
-deleted.
+**Phases 0 and 1 are done and merged to `main` in every repo.** **Phase 2: auth-server
+([PR #18](https://github.com/Luis-Palacios/auth-server/pull/18)) and membership-applications
+([PR #20](https://github.com/Luis-Palacios/membership-applications/pull/20)) are done and merged.**
+staff-app's groundwork is merged: line endings
+([PR #30](https://github.com/Luis-Palacios/staff-app/pull/30)), lockfile + pnpm pin
+([PR #31](https://github.com/Luis-Palacios/staff-app/pull/31)) and `.dockerignore`
+([PR #32](https://github.com/Luis-Palacios/staff-app/pull/32)). Old local `deploy/*`, `docs/*` and
+`feature/*` branches in the other repos were rebase-merged, so git still lists them as unmerged;
+they can be deleted.
 
-**Next session starts here: staff-app `.dockerignore`** (run the build-context check below first),
-then the Dockerfile. Line endings are done:
-[staff-app PR #30](https://github.com/Luis-Palacios/staff-app/pull/30) (merged). Same way of working: Claude explains, the owner writes (or asks Claude to, with
-a preview of each change first), Claude reviews and tests from the image.
+**Next session starts here: the staff-app Dockerfile** (see the staff-app item in Phase 2, and
+auth-server's Dockerfile for the pnpm pattern). Same way of working: Claude explains, the owner
+writes (or asks Claude to, with a preview of each change first), Claude reviews and tests from the
+image.
 
 State of branches:
-- **membership-applications `deploy/dockerfile`** →
-  [PR #20](https://github.com/Luis-Palacios/membership-applications/pull/20) (closes #19), all done
-  and tested. Merge it, then delete the branch. Commits: `ecef5de` `.gitattributes`/`.editorconfig` ·
-  `49ddf91` renormalize · `420b44c` + `dc6db65` settings (fail closed, `.env` only outside
-  deployments) · `9d5fccd` pre-commit ruff bump · `ea83e43` prod/dev dependency split · `4e54487`
-  dependency upgrades · `6a291c8` `.dockerignore` · `7e148da` `Dockerfile`.
-- **management-infra `docs/phase-2-membership-dockerfile`**: this roadmap's updates.
+- **management-infra `docs/phase-2-staff-app`**: this roadmap's updates.
+- **Windows clone of staff-app:** before pulling `main`, delete any untracked local
+  `pnpm-lock.yaml`, or the pull refuses to overwrite it.
 - **Line endings:** auth-server and membership-applications enforce LF with `.gitattributes` (what
   Git stores) **and** `.editorconfig` (what the editor creates; needs `root = true` and a `[*]`
   section, or it's silently ignored). staff-app now has both as well (PR #30, 16 files renormalized).
@@ -566,11 +566,35 @@ Per repo:
       - Migrations need DDL rights and the app user doesn't have them (Phase 6). `run-task` overrides
         can't change `secrets:`, so the migrate task needs its **own task definition**
         (`auth-server-migrate`: same image, owner-level `DATABASE_URL`).
-- [ ] **staff-app**: Next.js standalone output → `node server.js`. Copy `.next/static` →
+- [~] **staff-app**: Next.js standalone output → `node server.js`. Copy `.next/static` →
       `.next/standalone/.next/static` and `public` → `.next/standalone/public`, and set
       `ENV HOSTNAME=0.0.0.0`. Add a **post-build smoke test** (in CI or a script): run the image,
       then fetch `/api/health` **and** one `/_next/static` file. A missing static copy leaves
       the health check at 200, so only the asset fetch catches it.
+      **Groundwork done (2026-10-08), Dockerfile not started.** Findings and decisions:
+      - **The lockfile had never been committed** ([PR #31](https://github.com/Luis-Palacios/staff-app/pull/31)).
+        A leftover template block in `.gitignore` ignored every lockfile, so `pnpm-lock.yaml` existed
+        only on the Mac. A build from a checkout couldn't use `--frozen-lockfile`. Found by the
+        build-context check, not by git: always look at what's *missing* from the context too.
+      - **pnpm pinned** like auth-server: `devEngines.packageManager` (`onFail: download`) +
+        `packageManager`, both `12.3.4`. With `onFail: download`, pnpm writes its own version and
+        integrity hashes into the lockfile (`packageManagerDependencies`), so adding the pin changes
+        the lockfile. Side effect: `npx` now fails with `EBADDEVENGINES`; use `pnpm exec`/`pnpm dlx`.
+        The Dockerfile's `ARG PNPM_VERSION` must match.
+      - `.npmrc` (`package-lock=true`, the default) deleted. pnpm 10+ reads only auth/registry
+        settings from `.npmrc`; the rest lives in `pnpm-workspace.yaml`.
+      - **`.dockerignore`** ([PR #32](https://github.com/Luis-Palacios/staff-app/pull/32)): context
+        62,840 files / 2.0 GB → 94 files / 772 KB. Next-specific reasons:
+        - `**/.env*` matters more than usual: `next build` loads `.env*` itself and inlines
+          `NEXT_PUBLIC_*` values into the client bundle.
+        - Host `node_modules` has native binaries for the host OS (`sharp-darwin-x64`,
+          `@tailwindcss/oxide-darwin-x64`); `.next`, `next-env.d.ts` and `*.tsbuildinfo` are host
+          build output and caches.
+        - Next 16's `next build` doesn't run ESLint (Next 15 did), so `eslint.config.mjs` and
+          `.prettierrc` are excluded.
+        - Kept: `pnpm-workspace.yaml` (its `allowBuilds` lets `sharp`, `oxide` and `unrs-resolver`
+          run install scripts, so the image gets Linux binaries), `public/`, the lockfile and the
+          configs `next build` reads.
 
 **New concepts:** layers & caching, multi-stage builds, image size, build args vs runtime env.
 
