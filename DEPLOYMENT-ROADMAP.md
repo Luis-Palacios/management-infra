@@ -12,33 +12,44 @@ Started: 2026-09-21
 
 ---
 
-## Where we left off (2026-10-07)
+## Where we left off (2026-10-08)
 
-**Phases 0 and 1 are done and merged to `main` in every repo** (checked 2026-09-30; the old
-`deploy/*` and `docs/*` branches were rebase-merged, so git still lists them as unmerged; they can
-be deleted). **Phase 2: auth-server is done** (PR below, waiting for the owner to merge). Order for
-the rest: membership-applications → staff-app.
+**Phases 0 and 1 are done and merged to `main` in every repo.** **Phase 2: auth-server is done and
+merged** ([PR #18](https://github.com/Luis-Palacios/auth-server/pull/18)). **membership-applications
+is done** (PR below, waiting for the owner to merge). Old local `deploy/*`, `docs/*` and `feature/*`
+branches in all four repos were rebase-merged, so git still lists them as unmerged; they can be
+deleted.
 
-**Next session starts here: membership-applications `.dockerignore`**, then its Dockerfile (see the
-membership-applications item under Phase 2). Same way of working: Claude explains, the owner writes,
-Claude reviews and tests from the image. Use the build-context check below on it first.
+**Next session starts here: staff-app** (the last Phase 2 item). Start with `.gitattributes` +
+`.editorconfig` (LF; 15 CRLF files), then `.dockerignore` (run the build-context check below first),
+then the Dockerfile. Same way of working: Claude explains, the owner writes (or asks Claude to, with
+a preview of each change first), Claude reviews and tests from the image.
 
 State of branches:
-- **auth-server `deploy/dockerfile`** → [PR #18](https://github.com/Luis-Palacios/auth-server/pull/18)
-  (closes #17), all done and tested. Merge it, then delete the branch. Commits: `59a6c70`
-  `.dockerignore` · `03fb44a` `.pnpmfile.cjs` (drizzle-kit leak) · `55d933f` `Dockerfile` · `59800e7`
-  `src/migrate.ts` + `COPY drizzle` · `6b21463` `.gitattributes` (LF) · `b456fde` docs · `b42ff0d`
-  `roles` export · `0d4ff3f` `set-role.ts` · `82e6d9e` `.editorconfig` · `2b4e1c6`
-  `drizzle.config.ts` `DATABASE_URL` check · `c9a5c61` docs (set-role) · `774505e` docs
-  (`create-admin` kept as the local-dev shortcut).
-- **management-infra `docs/phase-2-auth-dockerfile`**: this roadmap's updates.
-- **Line endings:** auth-server enforces LF with `.gitattributes` (what Git stores) **and**
-  `.editorconfig` (what the editor creates; needs `root = true` and a `[*]` section, or it's
-  silently ignored). membership-applications (9 CRLF files) and staff-app (15) have neither yet. Add
-  both there (`.gitattributes` with `git add --renormalize .`, as its own commit) when Phase 2
-  reaches those repos. Lesson: VS Code on Windows creates CRLF files by default, and the Biome VS
-  Code extension shows only lint diagnostics, never formatting differences, so CRLF shows up only in
-  `biome check` on the CLI.
+- **membership-applications `deploy/dockerfile`** →
+  [PR #20](https://github.com/Luis-Palacios/membership-applications/pull/20) (closes #19), all done
+  and tested. Merge it, then delete the branch. Commits: `ecef5de` `.gitattributes`/`.editorconfig` ·
+  `49ddf91` renormalize · `420b44c` + `dc6db65` settings (fail closed, `.env` only outside
+  deployments) · `9d5fccd` pre-commit ruff bump · `ea83e43` prod/dev dependency split · `4e54487`
+  dependency upgrades · `6a291c8` `.dockerignore` · `7e148da` `Dockerfile`.
+- **management-infra `docs/phase-2-membership-dockerfile`**: this roadmap's updates.
+- **Line endings:** auth-server and membership-applications enforce LF with `.gitattributes` (what
+  Git stores) **and** `.editorconfig` (what the editor creates; needs `root = true` and a `[*]`
+  section, or it's silently ignored). staff-app (15 CRLF files) still has neither. Lesson: VS Code on
+  Windows creates CRLF files by default, and the Biome VS Code extension shows only lint diagnostics,
+  never formatting differences, so CRLF shows up only in `biome check` on the CLI.
+
+Follow-ups noted along the way (not blocking):
+- **membership-applications `ruff.toml` `target-version = "py310"`** should be `py314`. Changing it
+  gives 39 lint errors, mostly `TC001-003` (Python 3.14's lazy annotations make ruff want imports
+  under `TYPE_CHECKING`). Don't blindly `--fix`: pydantic models and FastAPI dependencies need those
+  types at runtime. Configure `lint.flake8-type-checking.runtime-evaluated-base-classes` first.
+- **membership-applications `uvloop`/`httptools`:** add them when routes go async (async Postgres),
+  and set `loop="uvloop"`, `http="httptools"` explicitly in `run.py`, so a missing package fails at
+  startup instead of silently falling back to asyncio (uvicorn's default is `"auto"`).
+- **membership-applications one `DEBUG` flag** controls tracebacks, log level and SQL echo (with
+  bound parameters). Split into `LOG_LEVEL` and an opt-in SQL echo (`hide_parameters=True`) when
+  structured logging arrives (Phase 9).
 
 Useful checks:
 - **How to check the build context:** build a throwaway image whose Dockerfile is
@@ -389,11 +400,58 @@ Besides the `Dockerfile` itself, each repo needs:
 
 Per repo:
 
-- [ ] **membership-applications**: the official uv Docker pattern (`uv sync --frozen --no-dev
-      --all-packages`) plus **Microsoft's `msodbcsql18`** from their apt repo. Check that it supports
-      the Debian version `python:3.14-slim` is based on. Entry point:
-      `python -m membership_applications.api.run`, `WORKERS=1` (scale with tasks instead).
-      Azure SQL needs `Encrypt=yes` in the connection string.
+- [x] **membership-applications**: `.dockerignore` (`6a291c8`) and Dockerfile (`7e148da`), in
+      [PR #20](https://github.com/Luis-Palacios/membership-applications/pull/20). Entry point
+      `python -m membership_applications.api.run`, `WORKERS=1` (scale with tasks instead). Azure SQL
+      needs `Encrypt=yes` in the connection string. Decisions and findings (2026-10-08):
+      - **Groundwork first, found while reviewing:**
+        - Both settings classes always read `.env`, and `ENVIRONMENT` defaulted to `local` (public
+          `/docs`) and `DEBUG` to `True` (tracebacks in 500s, SQL echo with bound parameters in the
+          logs). Now `ENVIRONMENT` is required, `DEBUG` defaults to `False`, and a validator refuses
+          `DEBUG=True` in production (fail closed).
+        - `.env` handling (`env_file.py`): read unless `ENVIRONMENT` is `staging`/`production` *in
+          the real environment*. Deployments must set it (it's required), so they never read a stray
+          `.env`; locally it's not in the shell, so `.env` is read and supplies `ENVIRONMENT=local`.
+          The owner rejected `uv run --env-file .env` (a flag on every command). A first attempt
+          gated on `ENVIRONMENT == "local"` *before* `.env` was read, so it never read it locally.
+        - **Don't bake `ENVIRONMENT=production` into the image:** that would make the required check
+          pointless. **Set `ENVIRONMENT=production` in the task definition (Phase 8).**
+      - **Prod vs dev dependencies:** `fastapi[standard]` was a runtime dependency (fastapi-cli,
+        fastapi-cloud-cli with sentry-sdk, rich, typer, httpx, jinja2, watchfiles, ...; none used).
+        It's now in the API member's `[dependency-groups] dev` (for `fastapi dev`); prod has
+        `fastapi` + `uvicorn` (imported by `run.py`, previously undeclared). Prod-only install:
+        57 → 30 packages. Owner chose plain `uvicorn` over `uvicorn[standard]` for now (see
+        follow-ups). Lesson: `uv remove X` + `uv add X` re-resolves X's subtree at the latest
+        versions; edit `pyproject.toml` and run `uv lock` to keep pins. The upgrades were kept as their
+        own commit. FastAPI 0.142 added `opentelemetry-api` as a *runtime* dependency (~300 KB).
+      - **Two stages.** `builder`: pinned uv `0.12.23`, deps-only layer with bind-mounted `uv.lock` +
+        both `pyproject.toml` files (`--locked --no-install-workspace`), then `COPY . .` and
+        `uv sync --locked --no-dev --all-packages --no-editable` (the project lands in
+        `site-packages`). `runtime`: same base, driver, and `COPY --from=builder /app/.venv` only (no
+        uv, no source). Same base and same `/app/.venv` path in both stages, because venv scripts have
+        absolute shebangs.
+      - **`--locked`, not `--frozen`:** `--frozen` doesn't check the lock against `pyproject.toml`.
+      - **Base `python:3.14.7-slim-trixie`:** pinned including the Debian release, because the
+        driver repo URL is Debian 13 specific.
+      - **`msodbcsql18` 18.7.1.1-1** via Microsoft's `packages-microsoft-prod.deb` (no gpg needed),
+        `ACCEPT_EULA=Y`, curl purged in the same `RUN`. Available for trixie on amd64 and arm64.
+        **Found by testing:** the driver links `libgssapi_krb5.so.2` but its package doesn't declare
+        it. It arrived with curl and was auto-removed with it, giving `Can't open lib ... file not
+        found` on the first real connection while `pyodbc.drivers()` still listed the driver (it only
+        reads `odbcinst.ini`). Fixed by installing `libgssapi-krb5-2` explicitly; check with `ldd`.
+      - Root-owned `.venv`, runs as UID 10001 (`useradd` without `--system`, which expects ≤ 999).
+        Exec-form `CMD ["python", "-m", ...]`, python as PID 1.
+      - `UV_COMPILE_BYTECODE=1` (faster cold start; most of why the venv is 71 MB),
+        `UV_LINK_MODE=copy`, `UV_PYTHON_DOWNLOADS=0`.
+      - `.dockerignore` also excludes the Dockerfile and dev-tool config, so editing them doesn't
+        invalidate the `COPY . .` layer. `README.md` must stay (`uv_build` needs it). Context:
+        4106 files / 140 MB → 47 files / 528 KB.
+      - **Verified from the image (amd64):** `/health` 200 against the dev Azure SQL copy with
+        `ENVIRONMENT=production`; `/docs` 404; 401 without a token; startup fails without config;
+        `docker stop` exits 0 in ~1s. Image is 270 MB (~135 base, 71 venv, 10 driver).
+        **Not yet tested:** arm64 (Phase 4) and in-flight requests during SIGTERM (Phase 3/8).
+      - Testing gotcha on Windows: probe published ports with `127.0.0.1`, not `localhost`
+        (`localhost` tries IPv6 `::1` first and the request hung).
 - [x] **auth-server**: `.dockerignore` (`59a6c70`), Dockerfile (`55d933f`), `migrate.ts`
       (`59800e7`) and `set-role.ts` (`0d4ff3f`) are done, in
       [PR #18](https://github.com/Luis-Palacios/auth-server/pull/18). Dockerfile decisions and findings:
@@ -528,6 +586,9 @@ Per repo:
       so membership-applications' `JWT_ISSUER`/`JWT_AUDIENCE` move to `:3001` too
       (`AUTH_SERVER_URL` stays internal).
 - [ ] `.env.example` per service, with real `.env` files gitignored.
+- [ ] membership-applications needs `ENVIRONMENT` set as a real env var in compose (`environment:`
+      or `env_file:` in `compose.yaml`; the image never reads a `.env` itself). Use `staging` or
+      `production` there to exercise the prod code path (no `/docs`, `DEBUG` refused in production).
 - [ ] Test the whole flow: sign-up → email verification → sign-in → list applications (JWT path).
 
 **New concepts:** container networking/DNS by service name, which is the same idea as Service Connect.
@@ -596,6 +657,8 @@ Per repo:
 - [ ] 3 task definitions (start at 0.25 vCPU / 0.5 GB; staff-app may need 1 GB), ARM64,
       logs → CloudWatch (retention 14–30 days, not "never expire").
 - [ ] 3 services, desired count 1 each. Deployment circuit breaker with rollback on.
+- [ ] membership-applications task definition: **`ENVIRONMENT=production`** (required; the image
+      doesn't set it), `DEBUG` unset or `false` (`true` is refused at startup in production).
 - [ ] Container `stopTimeout` above auth-server's `SHUTDOWN_TIMEOUT_MS` (30s default vs 20s is
       fine; if you raise one, raise the other).
 - [ ] **Verify Service Connect draining.** Does ECS remove auth-server from Service Connect before
