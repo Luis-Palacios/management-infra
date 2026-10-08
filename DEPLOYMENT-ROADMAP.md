@@ -22,7 +22,7 @@ deleted.
 
 **Next session starts here: staff-app `.dockerignore`** (run the build-context check below first),
 then the Dockerfile. Line endings are done:
-[staff-app PR #30](https://github.com/Luis-Palacios/staff-app/pull/30) (merge it first). Same way of working: Claude explains, the owner writes (or asks Claude to, with
+[staff-app PR #30](https://github.com/Luis-Palacios/staff-app/pull/30) (merged). Same way of working: Claude explains, the owner writes (or asks Claude to, with
 a preview of each change first), Claude reviews and tests from the image.
 
 State of branches:
@@ -42,8 +42,8 @@ State of branches:
   `"endOfLine": "auto"`, which keeps whatever ending a file has, so CRLF was never flagged; it's now
   `"lf"`. After pulling a renormalize commit on another clone, refresh the working tree with
   `git rm --cached -r -q . ; git reset --hard` (no uncommitted work).
-- **staff-app `chore/lf-line-endings`** → [PR #30](https://github.com/Luis-Palacios/staff-app/pull/30):
-  `07b8073` config, `96d2ad8` renormalize. `prettier --check .` still flags 10 files with existing
+- **staff-app** line endings, merged in [PR #30](https://github.com/Luis-Palacios/staff-app/pull/30):
+  `c373443` config, `4dff435` renormalize. `prettier --check .` still flags 10 files with existing
   formatting differences (no CRs). Fix them in their own commit some time; not blocking.
 
 Follow-ups noted along the way (not blocking):
