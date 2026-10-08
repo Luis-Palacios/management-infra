@@ -24,10 +24,10 @@ staff-app's groundwork is merged: line endings
 `feature/*` branches in the other repos were rebase-merged, so git still lists them as unmerged;
 they can be deleted.
 
-**Next session starts here: the staff-app Dockerfile** (see the staff-app item in Phase 2, and
-auth-server's Dockerfile for the pnpm pattern). Decided: alpine; env validated lazily
-([PR #33](https://github.com/Luis-Palacios/staff-app/pull/33), merge it first), so the build
-needs no env vars. Same way of working: Claude explains, the owner
+**staff-app Dockerfile: [PR #34](https://github.com/Luis-Palacios/staff-app/pull/34), done and
+tested, waiting for the owner to merge.** After that, Phase 2's only open item is the post-build
+smoke test script; then Phase 3 (compose). Same way of working: Claude explains, the owner writes
+(or asks Claude to, with a preview of each change first), Claude reviews and tests from the image. Same way of working: Claude explains, the owner
 writes (or asks Claude to, with a preview of each change first), Claude reviews and tests from the
 image.
 
@@ -568,7 +568,7 @@ Per repo:
       - Migrations need DDL rights and the app user doesn't have them (Phase 6). `run-task` overrides
         can't change `secrets:`, so the migrate task needs its **own task definition**
         (`auth-server-migrate`: same image, owner-level `DATABASE_URL`).
-- [~] **staff-app**: Next.js standalone output → `node server.js`. Copy `.next/static` →
+- [~] **staff-app** (Dockerfile done, smoke test script left): Next.js standalone output → `node server.js`. Copy `.next/static` →
       `.next/standalone/.next/static` and `public` → `.next/standalone/public`, and set
       `ENV HOSTNAME=0.0.0.0`. Add a **post-build smoke test** (in CI or a script): run the image,
       then fetch `/api/health` **and** one `/_next/static` file. A missing static copy leaves
@@ -612,8 +612,24 @@ Per repo:
         Rejected: placeholder values in the build `RUN` (tested: no leak today, but only because no
         page prerenders with env; that's how the `rewrites()` bug happened) and
         `SKIP_ENV_VALIDATION`/`NEXT_PHASE` (same silent risk).
-      - Noticed: npm 11.19 warns that the global `pnpm` install's install scripts aren't covered
-        by `allowScripts` (auth-server too). pnpm works; look at it while writing the Dockerfile.
+      - **Dockerfile** ([PR #34](https://github.com/Luis-Palacios/staff-app/pull/34)): two stages,
+        `build` (all deps, `next build` with no env) → `final` (standalone + `.next/static` +
+        `public/`). No prod-deps stage: standalone output already traces what the server loads.
+        Container port **3000** (dev stays 3001; compose publishes `3001:3000`). Image 211 MB.
+        - pnpm via `npm install -g --allow-scripts=pnpm`: its install script swaps in the native
+          binary. npm 11.19 only warns about unlisted scripts (they still ran); npm 12 blocks them
+          and pnpm would fall back to running through Node. **Follow-up: same flag in auth-server.**
+        - Runs as `node`; code root-owned, only `.next/cache` writable (`/_next/image` writes
+          there). **Verified with `--read-only`** plus a writable `.next/cache`: every route works.
+          So Phase 8 can set `readonlyRootFilesystem` with a volume for `.next/cache`.
+        - `/_next/image` verified: PNG → WebP, `MISS` then `HIT`, files in `.next/cache/images`.
+          **Correction:** `favicon.ico` also goes through `sharp` (returned as PNG), so the smoke
+          test can use `/_next/image?url=/favicon.ico&w=64&q=75` with no extra test image.
+        - **SIGTERM:** Next's `server.js` lets in-flight requests finish, then exits **143**
+          (128 + SIGTERM, its own exit, not a kill). Tested: a 5 s proxied request completed with 200,
+          and the process exited when it finished. ECS will show exit code 143 on every deploy;
+          that's expected.
+        - pnpm 12's store is `/root/.local/share/pnpm/store/v11`, inside the cache mount.
 
 **New concepts:** layers & caching, multi-stage builds, image size, build args vs runtime env.
 
