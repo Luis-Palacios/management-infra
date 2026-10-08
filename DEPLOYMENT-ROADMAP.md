@@ -20,9 +20,9 @@ is done** (PR below, waiting for the owner to merge). Old local `deploy/*`, `doc
 branches in all four repos were rebase-merged, so git still lists them as unmerged; they can be
 deleted.
 
-**Next session starts here: staff-app** (the last Phase 2 item). Start with `.gitattributes` +
-`.editorconfig` (LF; 15 CRLF files), then `.dockerignore` (run the build-context check below first),
-then the Dockerfile. Same way of working: Claude explains, the owner writes (or asks Claude to, with
+**Next session starts here: staff-app `.dockerignore`** (run the build-context check below first),
+then the Dockerfile. Line endings are done:
+[staff-app PR #30](https://github.com/Luis-Palacios/staff-app/pull/30) (merge it first). Same way of working: Claude explains, the owner writes (or asks Claude to, with
 a preview of each change first), Claude reviews and tests from the image.
 
 State of branches:
@@ -35,9 +35,16 @@ State of branches:
 - **management-infra `docs/phase-2-membership-dockerfile`**: this roadmap's updates.
 - **Line endings:** auth-server and membership-applications enforce LF with `.gitattributes` (what
   Git stores) **and** `.editorconfig` (what the editor creates; needs `root = true` and a `[*]`
-  section, or it's silently ignored). staff-app (15 CRLF files) still has neither. Lesson: VS Code on
-  Windows creates CRLF files by default, and the Biome VS Code extension shows only lint diagnostics,
-  never formatting differences, so CRLF shows up only in `biome check` on the CLI.
+  section, or it's silently ignored). staff-app now has both as well (PR #30, 16 files renormalized).
+  Lesson: VS Code on Windows creates CRLF files by default. In auth-server, the Biome VS Code
+  extension shows only lint diagnostics, never formatting differences, so CRLF showed up only in
+  `biome check` on the CLI. In staff-app (ESLint + Prettier), `.prettierrc` had
+  `"endOfLine": "auto"`, which keeps whatever ending a file has, so CRLF was never flagged; it's now
+  `"lf"`. After pulling a renormalize commit on another clone, refresh the working tree with
+  `git rm --cached -r -q . ; git reset --hard` (no uncommitted work).
+- **staff-app `chore/lf-line-endings`** → [PR #30](https://github.com/Luis-Palacios/staff-app/pull/30):
+  `07b8073` config, `96d2ad8` renormalize. `prettier --check .` still flags 10 files with existing
+  formatting differences (no CRs). Fix them in their own commit some time; not blocking.
 
 Follow-ups noted along the way (not blocking):
 - **membership-applications `ruff.toml` `target-version = "py310"`** should be `py314`. Changing it
@@ -73,8 +80,8 @@ just to ship, so go slowly.
   plainly when something is wrong.
 - Prefer industry-standard production patterns over the minimum for ~20 users, and design for the
   API and auth-server possibly going public later (mobile app).
-- The owner is on Windows/PowerShell 7, so give commands as PowerShell or as a script file, not
-  multi-line bash.
+- The owner switches between Windows (PowerShell 7) and macOS (zsh). Ask which machine they're on,
+  or give commands that work in both (single-line, or a script file), not multi-line bash only.
 
 **Local setup still needed after this session's changes:**
 - `auth-server/.env`: add a bare `TRUSTED_PROXIES=` line. It is now required to be *present*
