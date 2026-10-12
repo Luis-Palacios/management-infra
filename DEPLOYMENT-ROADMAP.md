@@ -1,7 +1,7 @@
 # Deployment Roadmap
 
 Working doc for deploying `staff-app` (Next.js), `auth-server` (better-auth/Hono) and
-`membership-applications` (FastAPI) to AWS. The goals are to learn AWS step by step, to run
+`membership-management` (FastAPI) to AWS. The goals are to learn AWS step by step, to run
 something real for the church (~20 users), and to end up with something worth showing in
 interviews. As in the other roadmaps, each phase is a learning step. Do the manual (console)
 version first, then automate it. Pick up at whichever phase is still marked `[ ]`.
@@ -15,8 +15,8 @@ Started: 2026-09-21
 ## Where we left off (2026-10-08)
 
 **Phases 0 and 1 are done and merged to `main` in every repo.** **Phase 2: auth-server
-([PR #18](https://github.com/Luis-Palacios/auth-server/pull/18)) and membership-applications
-([PR #20](https://github.com/Luis-Palacios/membership-applications/pull/20)) are done and merged.**
+([PR #18](https://github.com/Luis-Palacios/auth-server/pull/18)) and membership-management
+([PR #20](https://github.com/Luis-Palacios/membership-management/pull/20)) are done and merged.**
 staff-app's groundwork is merged: line endings
 ([PR #30](https://github.com/Luis-Palacios/staff-app/pull/30)), lockfile + pnpm pin
 ([PR #31](https://github.com/Luis-Palacios/staff-app/pull/31)) and `.dockerignore`
@@ -35,7 +35,7 @@ State of branches:
 - **management-infra `docs/phase-2-staff-app`**: this roadmap's updates.
 - **Windows clone of staff-app:** before pulling `main`, delete any untracked local
   `pnpm-lock.yaml`, or the pull refuses to overwrite it.
-- **Line endings:** auth-server and membership-applications enforce LF with `.gitattributes` (what
+- **Line endings:** auth-server and membership-management enforce LF with `.gitattributes` (what
   Git stores) **and** `.editorconfig` (what the editor creates; needs `root = true` and a `[*]`
   section, or it's silently ignored). staff-app now has both as well (PR #30, 16 files renormalized).
   Lesson: VS Code on Windows creates CRLF files by default. In auth-server, the Biome VS Code
@@ -49,14 +49,14 @@ State of branches:
   formatting differences (no CRs). Fix them in their own commit some time; not blocking.
 
 Follow-ups noted along the way (not blocking):
-- **membership-applications `ruff.toml` `target-version = "py310"`** should be `py314`. Changing it
+- **membership-management `ruff.toml` `target-version = "py310"`** should be `py314`. Changing it
   gives 39 lint errors, mostly `TC001-003` (Python 3.14's lazy annotations make ruff want imports
   under `TYPE_CHECKING`). Don't blindly `--fix`: pydantic models and FastAPI dependencies need those
   types at runtime. Configure `lint.flake8-type-checking.runtime-evaluated-base-classes` first.
-- **membership-applications `uvloop`/`httptools`:** add them when routes go async (async Postgres),
+- **membership-management `uvloop`/`httptools`:** add them when routes go async (async Postgres),
   and set `loop="uvloop"`, `http="httptools"` explicitly in `run.py`, so a missing package fails at
   startup instead of silently falling back to asyncio (uvicorn's default is `"auto"`).
-- **membership-applications one `DEBUG` flag** controls tracebacks, log level and SQL echo (with
+- **membership-management one `DEBUG` flag** controls tracebacks, log level and SQL echo (with
   bound parameters). Split into `LOG_LEVEL` and an opt-in SQL echo (`hide_parameters=True`) when
   structured logging arrives (Phase 9).
 
@@ -88,19 +88,19 @@ just to ship, so go slowly.
 **Local setup still needed after this session's changes:**
 - `auth-server/.env`: add a bare `TRUSTED_PROXIES=` line. It is now required to be *present*
   (empty is allowed), and auth-server won't start without it.
-- `membership-applications/.env`: needs `JWT_ISSUER` and `JWT_AUDIENCE` (both `http://localhost:5000`
+- `membership-management/.env`: needs `JWT_ISSUER` and `JWT_AUDIENCE` (both `http://localhost:5000`
   locally, same as `AUTH_SERVER_URL`). Already done and verified. `RATE_LIMIT_STORAGE_URI` is
   optional (defaults to `memory://`).
 - `auth-server/.env`: `CORS_ORIGINS=http://localhost:3000,http://localhost:8000` became
   `TRUSTED_ORIGINS=http://localhost:3000` plus an empty `CORS_ORIGINS=`. Without `TRUSTED_ORIGINS`,
-  sign-in from staff-app gets `403 INVALID_ORIGIN`. `membership-applications/.env`:
+  sign-in from staff-app gets `403 INVALID_ORIGIN`. `membership-management/.env`:
   `CORS_ALLOWED_ORIGINS=` (empty). Both are already done on this machine.
 
 **Decisions and findings from Phase 1 so far (details are in the items below):**
 - Listen `PORT` and public `BETTER_AUTH_URL` are separate variables in auth-server.
-- membership-applications validates `iss`/`aud` from `JWT_ISSUER`/`JWT_AUDIENCE` (public URL) and
+- membership-management validates `iss`/`aud` from `JWT_ISSUER`/`JWT_AUDIENCE` (public URL) and
   fetches keys from `AUTH_SERVER_URL` (internal address).
-- Rate limiting in membership-applications is now per user on the verified JWT `sub`, built directly
+- Rate limiting in membership-management is now per user on the verified JWT `sub`, built directly
   on the `limits` library in a FastAPI dependency (not slowapi). Storage is swappable to Redis through
   `RATE_LIMIT_STORAGE_URI`; needed once there is more than one worker or replica. The anonymous per-IP
   layer is deliberately left to Cloudflare/WAF (Phase 8.5) and must be revisited before exposing the
@@ -160,7 +160,7 @@ None right now.
    /api/auth/* │ proxy            │ Bearer JWT
                ▼                  ▼
    ┌──────────────────┐   ┌───────────────────────────┐
-   │ auth-server      │◄──│ membership-applications   │  (JWKS fetch)
+   │ auth-server      │◄──│ membership-management     │  (JWKS fetch)
    │ (Fargate)        │   │ (Fargate)                 │
    └───┬──────────┬───┘   └────────────┬──────────────┘
        │          │ Resend API         │
@@ -171,7 +171,7 @@ None right now.
 Why it's shaped this way:
 
 - **Only staff-app is public.** The browser reaches auth-server through staff-app's existing
-  `/api/auth/*` proxy, so auth-server and membership-applications need no public endpoint.
+  `/api/auth/*` proxy, so auth-server and membership-management need no public endpoint.
   Security groups allow only staff-app → auth-server/membership, and auth-server → RDS.
 - **`BETTER_AUTH_URL` = staff-app's public URL** (e.g. `https://staff.example.org`). Cookies,
   email verification links and reset links all go through the proxy. This requires the
@@ -210,13 +210,13 @@ Service Connect.
 - [x] **auth-server: listen port is derived from `BETTER_AUTH_URL`** (`src/lib/config.ts:62`).
       In prod that URL is `https://staff.example.org`, so it would try to listen on 443. Add a
       separate `PORT` env var (default 5000) and keep `BETTER_AUTH_URL` only as the public URL.
-- [x] **membership-applications: `AUTH_SERVER_URL` is used for both the JWKS fetch and `iss`/`aud`**
+- [x] **membership-management: `AUTH_SERVER_URL` is used for both the JWKS fetch and `iss`/`aud`**
       (`api/jwt_auth.py:17,43-44`). In AWS the fetch URL is internal (`http://auth-server:5000`)
       but the issuer is the public URL, so every token would fail validation. Split it into
       `AUTH_SERVER_URL` (fetch) and `JWT_ISSUER`/`JWT_AUDIENCE` (validation).
 - [x] **Rate limiters will treat all users as one client.** Behind the BFF, every request comes
       from staff-app's IP:
-  - [x] membership-applications' `slowapi` used `get_remote_address`, so 60/min would be shared by
+  - [x] membership-management' `slowapi` used `get_remote_address`, so 60/min would be shared by
     *everyone*. Replaced by a per-user limiter on the verified JWT `sub` (`limits` library in a
     FastAPI dependency, storage swappable to Redis via `RATE_LIMIT_STORAGE_URI`). The per-IP layer for
     anonymous traffic is left to Cloudflare (Phase 8.5); revisit before exposing the API publicly.
@@ -353,10 +353,10 @@ Service Connect.
         Service Connect draining).
 - [x] **Production CORS.** The original plan was to set auth-server's `CORS_ORIGINS` to the staff
       public URL. **Replaced** (auth-server `feee555`, branch `deploy/split-origins`;
-      membership-applications `3afdab2`, branch `deploy/cors-opt-in`). Findings:
+      membership-management `3afdab2`, branch `deploy/cors-opt-in`). Findings:
       - `CORS_ORIGINS` fed two different controls: `hono/cors`, and better-auth's `trustedOrigins`
         (CSRF on the `Origin` header plus redirect-target checks). **CORS was dead config**: no
-        browser calls auth-server or membership-applications cross-origin, locally or in prod.
+        browser calls auth-server or membership-management cross-origin, locally or in prod.
         `http://localhost:8000` in the list did nothing.
       - better-auth **always trusts its base URL's origin** (`context/helpers.mjs:74`, v1.7.2). In
         prod that's the staff URL, so no extra trusted origins are needed.
@@ -366,10 +366,10 @@ Service Connect.
         **Empty `CORS_ORIGINS` means the middleware isn't mounted**, and entries must be bare
         origins (validated at startup). `baseURL` is now passed explicitly, so better-auth no
         longer reads `process.env.BETTER_AUTH_URL` itself.
-      - membership-applications: `CORSMiddleware` is mounted only when `CORS_ALLOWED_ORIGINS` is
+      - membership-management: `CORSMiddleware` is mounted only when `CORS_ALLOWED_ORIGINS` is
         non-empty.
       - **Prod values: all three empty** (auth-server `TRUSTED_ORIGINS` and `CORS_ORIGINS`,
-        membership-applications `CORS_ALLOWED_ORIGINS`).
+        membership-management `CORS_ALLOWED_ORIGINS`).
       - Verified locally:
         - Staff and base-URL origins pass the CSRF check; a foreign origin gets
           `403 INVALID_ORIGIN`.
@@ -409,9 +409,9 @@ Besides the `Dockerfile` itself, each repo needs:
 
 Per repo:
 
-- [x] **membership-applications**: `.dockerignore` (`6a291c8`) and Dockerfile (`7e148da`), in
-      [PR #20](https://github.com/Luis-Palacios/membership-applications/pull/20). Entry point
-      `python -m membership_applications.api.run`, `WORKERS=1` (scale with tasks instead). Azure SQL
+- [x] **membership-management**: `.dockerignore` (`6a291c8`) and Dockerfile (`7e148da`), in
+      [PR #20](https://github.com/Luis-Palacios/membership-management/pull/20). Entry point
+      `python -m membership_management.api.run`, `WORKERS=1` (scale with tasks instead). Azure SQL
       needs `Encrypt=yes` in the connection string. Decisions and findings (2026-10-08):
       - **Groundwork first, found while reviewing:**
         - Both settings classes always read `.env`, and `ENVIRONMENT` defaulted to `local` (public
@@ -517,7 +517,7 @@ Per repo:
         anyway; the benefit of not importing config is robustness, not hiding secrets.
       - **When the new role applies:** `session.cookieCache` is off, so `getSession` reads the user row
         on every request and the change is immediate. staff-app mints a fresh JWT on every call, so
-        membership-applications sees it on the next call; a token already copied elsewhere keeps the
+        membership-management sees it on the next call; a token already copied elsewhere keeps the
         old role until it expires (15 min default).
       - **No session revocation** (owner's decision: the script is for promoting the first admin and
         break-glass). Accepted gap: if admins were lost *because an account was compromised*, the
@@ -639,7 +639,7 @@ Per repo:
 `[ ]`
 
 - [ ] `compose.yaml` with the three apps plus a `postgres` container for auth-server.
-- [ ] membership-applications points at the **Azure SQL dev copy**. Allowlist your home IP in
+- [ ] membership-management points at the **Azure SQL dev copy**. Allowlist your home IP in
       its firewall.
 - [ ] The `migrate` service runs before auth-server (`depends_on: condition: service_completed_successfully`).
 - [ ] Healthchecks plus `depends_on: condition: service_healthy`.
@@ -649,10 +649,10 @@ Per repo:
 - [ ] **Match prod's `BETTER_AUTH_URL`:** set it to staff-app's origin (`http://localhost:3001`),
       not auth-server's. Email links and cookies then go through the proxy as in prod, and
       auth-server's `TRUSTED_ORIGINS` can be empty, as in prod. The JWT `iss`/`aud` change with it,
-      so membership-applications' `JWT_ISSUER`/`JWT_AUDIENCE` move to `:3001` too
+      so membership-management' `JWT_ISSUER`/`JWT_AUDIENCE` move to `:3001` too
       (`AUTH_SERVER_URL` stays internal).
 - [ ] `.env.example` per service, with real `.env` files gitignored.
-- [ ] membership-applications needs `ENVIRONMENT` set as a real env var in compose (`environment:`
+- [ ] membership-management needs `ENVIRONMENT` set as a real env var in compose (`environment:`
       or `env_file:` in `compose.yaml`; the image never reads a `.env` itself). Use `staging` or
       `production` there to exercise the prod code path (no `/docs`, `DEBUG` refused in production).
 - [ ] Test the whole flow: sign-up → email verification → sign-in → list applications (JWT path).
@@ -723,7 +723,7 @@ Per repo:
 - [ ] 3 task definitions (start at 0.25 vCPU / 0.5 GB; staff-app may need 1 GB), ARM64,
       logs → CloudWatch (retention 14–30 days, not "never expire").
 - [ ] 3 services, desired count 1 each. Deployment circuit breaker with rollback on.
-- [ ] membership-applications task definition: **`ENVIRONMENT=production`** (required; the image
+- [ ] membership-management task definition: **`ENVIRONMENT=production`** (required; the image
       doesn't set it), `DEBUG` unset or `false` (`true` is refused at startup in production).
 - [ ] Container `stopTimeout` above auth-server's `SHUTDOWN_TIMEOUT_MS` (30s default vs 20s is
       fine; if you raise one, raise the other).
@@ -778,7 +778,7 @@ so without the security-group step below, attackers can skip Cloudflare entirely
         only accepts Cloudflare: point better-auth at `CF-Connecting-IP` with
         `advanced.ipAddress.ipAddressHeaders: ['cf-connecting-ip']`. The Next.js rewrite already
         passes that header through untouched (verified locally).
-      - membership-applications: not affected if its rate limiter is keyed by JWT `sub` (Phase 1).
+      - membership-management: not affected if its rate limiter is keyed by JWT `sub` (Phase 1).
       - ALB access logs and CloudWatch will show Cloudflare IPs, so log `CF-Connecting-IP` in the apps.
 - [ ] **Don't cache anything dynamic.** Cloudflare's defaults only cache static file extensions,
       but check that `/api/*` and HTML pages show `cf-cache-status: DYNAMIC`/`BYPASS`, never `HIT`.
