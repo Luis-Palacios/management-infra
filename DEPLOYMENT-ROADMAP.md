@@ -12,41 +12,74 @@ Started: 2026-09-21
 
 ---
 
-## Where we left off (2026-10-08)
+## Where we left off (2026-10-16)
 
-**Phases 0 and 1 are done and merged to `main` in every repo.** **Phase 2: auth-server
-([PR #18](https://github.com/Luis-Palacios/auth-server/pull/18)) and membership-management
-([PR #20](https://github.com/Luis-Palacios/membership-management/pull/20)) are done and merged.**
-staff-app's groundwork is merged: line endings
-([PR #30](https://github.com/Luis-Palacios/staff-app/pull/30)), lockfile + pnpm pin
-([PR #31](https://github.com/Luis-Palacios/staff-app/pull/31)) and `.dockerignore`
-([PR #32](https://github.com/Luis-Palacios/staff-app/pull/32)). Old local `deploy/*`, `docs/*` and
-`feature/*` branches in the other repos were rebase-merged, so git still lists them as unmerged;
-they can be deleted.
+**Phases 0 and 1 are done. Phase 2's three Dockerfiles are merged** (auth-server
+[PR #18](https://github.com/Luis-Palacios/auth-server/pull/18), membership-management
+[PR #20](https://github.com/Luis-Palacios/membership-management/pull/20), staff-app
+[PR #34](https://github.com/Luis-Palacios/staff-app/pull/34)). Deployment was then paused on purpose
+(2026-10-08 → 10-16) to get the app to MVP before spending AWS credit. The MVP work added a lot to
+every repo, so **Phase 2 was reopened to check the images against today's `main`** before starting
+Phase 3 (compose).
 
-**staff-app Dockerfile: [PR #34](https://github.com/Luis-Palacios/staff-app/pull/34), done and
-tested, waiting for the owner to merge.** After that, Phase 2's only open item is the post-build
-smoke test script; then Phase 3 (compose). Same way of working: Claude explains, the owner writes
-(or asks Claude to, with a preview of each change first), Claude reviews and tests from the image. Same way of working: Claude explains, the owner
-writes (or asks Claude to, with a preview of each change first), Claude reviews and tests from the
-image.
+**What changed since the Dockerfiles were written (relevant to deploying):**
+- **membership-management has its own Postgres DB** (`members`: members, small groups, reports),
+  with Alembic migrations and a dev-only seed. It still reads the legacy SQL Server DB
+  (`assimilation`). Settings are now prefixed per DB: `ASSIMILATION_DATABASE_URL` (was
+  `DATABASE_URL`) and `MEMBERS_DATABASE_URL`, each with its own `*_DB_*` pool settings.
+- **A new service-to-service call: auth-server → membership-management.** When an invite is
+  accepted, auth-server calls `POST /internal/member-links/accepted-invite` with a shared secret in `X-Internal-Token`, so the
+  new user gets linked to their member (`docs/specs/member-user-linking.md` in the workspace repo).
+  Both sides now need `INTERNAL_API_TOKEN` (same value, 32+ chars). It's **required** in
+  production: auth-server refuses to start without it and `MEMBERSHIP_API_URL` under
+  `NODE_ENV=production`, and membership-management without it under `ENVIRONMENT=staging|production`.
+- **Permissions come from auth-server** (in the session and in the JWT's `perms`). Nothing new to
+  deploy, but a new permission name has an order: deploy auth-server first, then the services that
+  check it (until then they see a JWT without it and answer 403).
+- **`CHURCH_TIMEZONE`** (IANA name, default `America/Managua`) in membership-management **and**
+  staff-app. Keep the two equal, or "today" differs between the reports screens and the API.
+- **auth-server sends React Email templates** (`react-email` is a runtime dependency now).
+- **staff-app:** next-intl (en/es, messages compiled at build time), design tokens, the app
+  version (`NEXT_PUBLIC_APP_VERSION`, inlined at build) and `public/favicon.ico` was removed
+  (`app/icon.svg` instead).
+- **Workspace layout:** `members-management/` is now a git repo of its own (only `CLAUDE.md`,
+  `README.md`, `docs/specs/`), and every service, this repo included, is cloned inside it and
+  ignored by it. So all repos are siblings, and compose in this repo can build from `../<repo>`.
+  `ekklesiaio-landing/` lives there too but deploys to Vercel, outside this roadmap.
+
+**Result of the review (built all three images from `main` on 2026-10-16, amd64):** all three
+build, start and behave as before. **No Dockerfile is broken; the work is in compose and the AWS
+phases.** Details per repo are in Phase 2 under "Revisit (2026-10-16)". In short:
+- membership-management: the Dockerfile needs **no change**. The migration entry point already
+  exists (`python -m membership_management.data.migrate`, no `alembic.ini` needed) and was verified
+  from the image on a fresh DB with only `ENVIRONMENT` + `MEMBERS_DATABASE_URL`. What's missing is
+  running it: a migrate service in compose, a migrate task definition in ECS, and an RDS database.
+- auth-server: works. `react-email` doubled prod `node_modules` (68 → 143 MB); accepted (see the
+  decision table).
+- staff-app: works. The smoke test can't use `favicon.ico` anymore.
+
+**Next, in order:**
+1. ~~Decisions from the revisit~~ (done 2026-10-16, in the decision table).
+2. Fix the membership-management seed bug (Phase 2 revisit), so compose can seed a dev DB.
+3. Small changes from the revisit (one at a time, previewed): the alembic advisory lock
+   (decided), auth-server `--allow-scripts`, the staff-app smoke test script.
+4. Phase 3 (compose).
 
 State of branches:
-- **management-infra `docs/phase-2-staff-app`**: this roadmap's updates.
+- **management-infra `docs/phase-2-staff-app`** was rebase-merged; delete it. So were the old
+  `deploy/*`, `docs/*` and `feature/*` branches in the app repos (git lists them as unmerged).
 - **Windows clone of staff-app:** before pulling `main`, delete any untracked local
   `pnpm-lock.yaml`, or the pull refuses to overwrite it.
-- **Line endings:** auth-server and membership-management enforce LF with `.gitattributes` (what
-  Git stores) **and** `.editorconfig` (what the editor creates; needs `root = true` and a `[*]`
-  section, or it's silently ignored). staff-app now has both as well (PR #30, 16 files renormalized).
-  Lesson: VS Code on Windows creates CRLF files by default. In auth-server, the Biome VS Code
-  extension shows only lint diagnostics, never formatting differences, so CRLF showed up only in
-  `biome check` on the CLI. In staff-app (ESLint + Prettier), `.prettierrc` had
-  `"endOfLine": "auto"`, which keeps whatever ending a file has, so CRLF was never flagged; it's now
-  `"lf"`. After pulling a renormalize commit on another clone, refresh the working tree with
-  `git rm --cached -r -q . ; git reset --hard` (no uncommitted work).
-- **staff-app** line endings, merged in [PR #30](https://github.com/Luis-Palacios/staff-app/pull/30):
-  `c373443` config, `4dff435` renormalize. `prettier --check .` still flags 10 files with existing
-  formatting differences (no CRs). Fix them in their own commit some time; not blocking.
+- **Line endings:** auth-server, membership-management and staff-app enforce LF with
+  `.gitattributes` (what Git stores) **and** `.editorconfig` (what the editor creates; needs
+  `root = true` and a `[*]` section, or it's silently ignored). Lesson: VS Code on Windows creates
+  CRLF files by default. In auth-server, the Biome VS Code extension shows only lint diagnostics,
+  never formatting differences, so CRLF showed up only in `biome check` on the CLI. In staff-app
+  (ESLint + Prettier), `.prettierrc` had `"endOfLine": "auto"`, which keeps whatever ending a file
+  has, so CRLF was never flagged; it's now `"lf"`. After pulling a renormalize commit on another
+  clone, refresh the working tree with `git rm --cached -r -q . ; git reset --hard` (no uncommitted
+  work). staff-app's `prettier --check .` still flags files with older formatting differences; fix
+  them in their own commit some time.
 
 Follow-ups noted along the way (not blocking):
 - **membership-management `ruff.toml` `target-version = "py310"`** should be `py314`. Changing it
@@ -59,16 +92,24 @@ Follow-ups noted along the way (not blocking):
 - **membership-management one `DEBUG` flag** controls tracebacks, log level and SQL echo (with
   bound parameters). Split into `LOG_LEVEL` and an opt-in SQL echo (`hide_parameters=True`) when
   structured logging arrives (Phase 9).
+- **staff-app `/favicon.ico` redirects (307) to sign-in**: the file is gone and the middleware
+  treats the path as a page. Browsers use `app/icon.svg` from the `<head>`, so it's only a wasted
+  request per visit. Exclude it in the matcher or add the file.
+- **Workspace `.gitignore`** still lists `DEPLOYMENT-ROADMAP.md`, from before this file moved here.
+  `/*` already ignores it; the line can go.
 
 Useful checks:
 - **How to check the build context:** build a throwaway image whose Dockerfile is
   `FROM busybox`, `COPY . /ctx`, `RUN find /ctx -type f`, using
   `docker build --no-cache --progress=plain -f <that file> <repo>`. It lists exactly what the
-  `.dockerignore` lets through. Use it for the other two repos too.
-- **How to run the image against local Postgres** (container `my-postgres`, port 5432): replace
-  `localhost` with `host.docker.internal` in `DATABASE_URL`, e.g.
-  `docker run --rm -e DATABASE_URL=postgresql://user:pass@host.docker.internal:5432/db auth-server:dev node dist/migrate.js`.
+  `.dockerignore` lets through.
+- **How to run an image against local Postgres** (container `my-postgres`, port 5432): replace
+  `localhost`/`127.0.0.1` with `host.docker.internal` in the DB URL, e.g.
+  `docker run --rm -e DATABASE_URL=postgresql://user:pass@host.docker.internal:5432/db auth-server:dev node dist/migrate.js`
+  or `docker run --rm -e ENVIRONMENT=production -e MEMBERS_DATABASE_URL=postgresql+psycopg://user:pass@host.docker.internal:5432/db membership-management:dev python -m membership_management.data.migrate`.
   For a throwaway DB: `docker exec my-postgres psql -U <user> -d postgres -c "create database x"`.
+- **Probe auth-server from inside its container** (`docker exec <c> wget -qO- -S http://127.0.0.1:5000/health`):
+  on Docker Desktop the host port can answer or hang independently of the app.
 
 **How we work (read this at every session start):** the main goal is for the owner to learn, not
 just to ship, so go slowly.
@@ -84,17 +125,6 @@ just to ship, so go slowly.
   API and auth-server possibly going public later (mobile app).
 - The owner switches between Windows (PowerShell 7) and macOS (zsh). Ask which machine they're on,
   or give commands that work in both (single-line, or a script file), not multi-line bash only.
-
-**Local setup still needed after this session's changes:**
-- `auth-server/.env`: add a bare `TRUSTED_PROXIES=` line. It is now required to be *present*
-  (empty is allowed), and auth-server won't start without it.
-- `membership-management/.env`: needs `JWT_ISSUER` and `JWT_AUDIENCE` (both `http://localhost:5000`
-  locally, same as `AUTH_SERVER_URL`). Already done and verified. `RATE_LIMIT_STORAGE_URI` is
-  optional (defaults to `memory://`).
-- `auth-server/.env`: `CORS_ORIGINS=http://localhost:3000,http://localhost:8000` became
-  `TRUSTED_ORIGINS=http://localhost:3000` plus an empty `CORS_ORIGINS=`. Without `TRUSTED_ORIGINS`,
-  sign-in from staff-app gets `403 INVALID_ORIGIN`. `membership-management/.env`:
-  `CORS_ALLOWED_ORIGINS=` (empty). Both are already done on this machine.
 
 **Decisions and findings from Phase 1 so far (details are in the items below):**
 - Listen `PORT` and public `BETTER_AUTH_URL` are separate variables in auth-server.
@@ -123,7 +153,11 @@ just to ship, so go slowly.
 | Budget target | ~$30–60/mo (see [Cost](#cost-estimate): realistic is closer to $65–80) | |
 | Compute | ECS on Fargate | Common in job postings, no servers to patch |
 | Auth DB | RDS PostgreSQL, single-AZ `db.t4g.micro` | |
-| Church DB | Existing Azure SQL; a **dev/test copy exists** for local + testing | |
+| Members DB (membership-management's own Postgres) | **Same RDS instance as auth, separate database** (`auth`, `members`), owner + app role per database, `CONNECT` revoked from `PUBLIC` (decided 2026-10-16) | Postgres can't join across databases, so "no FK across services" is enforced by the DB; one instance (~$14/mo) instead of two; splitting later is a dump/restore and a URL change |
+| auth-server emails | **`react-email` stays a runtime dependency** (decided 2026-10-16) | Upstream merged all components into `react-email`; `@react-email/components` and the per-component packages are deprecated. Of the +75 MB in prod `node_modules`, ~28 MB is the never-loaded `email dev` CLI (esbuild, babel, socket.io...); the rest (react, tailwindcss, marked, prismjs, prettier) is imported at run time. A `.pnpmfile.cjs` strip breaks `email:dev` or the frozen lockfile. Revisit with build-time precompiled HTML only if size or scanner noise (Phase 4/10) becomes a real problem |
+| Where `compose.yaml` lives | **This repo, building from `../<repo>`** (decided 2026-10-16) | Infra stays in one repo (compose now, Terraform later); builds from local working trees, so changes are tested before they're pushed. Assumes the sibling layout from the workspace `README.md` (say so at the top of `compose.yaml`). Compose's own gitignored `.env` files live here, separate from each service's dev `.env`. Pulling ECR images (`compose.images.yaml`) can be added after Phase 4 |
+| membership-management migration lock | **`pg_advisory_xact_lock` in Alembic's `env.py`**, taken before `run_migrations()`, with `lock_timeout` moved from the connect options to a `SET LOCAL` after it (decided 2026-10-16) | Tested without it: two simultaneous runs leave the DB correct (one transaction, transactional DDL) but the second exits `1`, a false failed deploy. With the lock the second waits and no-ops. Same behaviour as auth-server's `migrate.ts`; the xact variant releases itself at commit/rollback. `lock_timeout` must come after the advisory lock or a waiting run gives up after 5s |
+| Church DB | Existing Azure SQL (`assimilation`, read-only); a **dev/test copy exists** for local + testing | |
 | Deploy order | Manual console first → GitHub Actions → rebuild everything in IaC | Learn each piece before automating it |
 | IaC tool | **Terraform CLI (HCL)**, pinned version (see [Phase 11](#phase-11--infrastructure-as-code)) | Shows up most in job postings; most tutorials and docs use it |
 | Domain / DNS | Existing domain, **DNS stays on Cloudflare** (no Route 53) | Already set up; Resend's sending domain is already verified there |
@@ -150,29 +184,35 @@ None right now.
 ## Target architecture
 
 ```
-                      Internet
-                         │  HTTPS (ACM cert)
-       Cloudflare DNS (CNAME) ─► ALB  (public subnets)
-                         │
-            ┌────────────▼─────────────┐           private subnets
-            │ staff-app  (Fargate)     │  BFF: the only public service
-            └──┬──────────────────┬────┘
-   /api/auth/* │ proxy            │ Bearer JWT
-               ▼                  ▼
-   ┌──────────────────┐   ┌───────────────────────────┐
-   │ auth-server      │◄──│ membership-management     │  (JWKS fetch)
-   │ (Fargate)        │   │ (Fargate)                 │
-   └───┬──────────┬───┘   └────────────┬──────────────┘
-       │          │ Resend API         │
-       ▼          ▼                    ▼
-  RDS Postgres   NAT (Elastic IP) ───► Azure SQL (firewall allowlists the EIP)
+                          Internet
+                             │  HTTPS (ACM cert)
+           Cloudflare DNS (CNAME) ─► ALB  (public subnets)
+                             │
+            ┌────────────────▼─────────────────┐       private subnets
+            │ staff-app (Fargate)              │  BFF: the only public service
+            └──────┬──────────────────────┬────┘
+       /api/auth/* │ proxy                │ Bearer JWT
+                   ▼                      ▼
+   ┌──────────────────────┐  JWKS   ┌───────────────────────────┐
+   │ auth-server          │◄────────│ membership-management     │
+   │ (Fargate)            │────────►│ (Fargate)                 │
+   └───┬──────────────┬───┘/internal└───┬───────────────────┬───┘
+       │              │ (member link)   │                   │
+       │ auth DB      │ Resend API      │ members DB        │ SQL Server
+       ▼              ▼                 │                   ▼
+  ┌─────────────┐   NAT (Elastic IP) ◄──┼───────────────────┘
+  │ RDS Postgres│◄──────────────────────┘
+  │ auth,members│   NAT ──► Resend, and ──► Azure SQL (firewall allowlists the EIP)
+  └─────────────┘
 ```
 
 Why it's shaped this way:
 
 - **Only staff-app is public.** The browser reaches auth-server through staff-app's existing
   `/api/auth/*` proxy, so auth-server and membership-management need no public endpoint.
-  Security groups allow only staff-app → auth-server/membership, and auth-server → RDS.
+  Security groups allow only staff-app → auth-server/membership, membership → auth-server (JWKS),
+  auth-server → membership (`/internal/*`, member linking), and auth-server/membership → RDS.
+  RDS is one instance with two databases (see the decision table).
 - **`BETTER_AUTH_URL` = staff-app's public URL** (e.g. `https://staff.example.org`). Cookies,
   email verification links and reset links all go through the proxy. This requires the
   code fixes in Phase 1.
@@ -573,7 +613,8 @@ Per repo:
       `ENV HOSTNAME=0.0.0.0`. Add a **post-build smoke test** (in CI or a script): run the image,
       then fetch `/api/health` **and** one `/_next/static` file. A missing static copy leaves
       the health check at 200, so only the asset fetch catches it.
-      **Groundwork done (2026-10-08), Dockerfile not started.** Findings and decisions:
+      **Dockerfile merged (PR #34); the smoke test script is still open** (see the revisit below
+      for its new image URL). Findings and decisions:
       - **The lockfile had never been committed** ([PR #31](https://github.com/Luis-Palacios/staff-app/pull/31)).
         A leftover template block in `.gitignore` ignored every lockfile, so `pnpm-lock.yaml` existed
         only on the Mac. A build from a checkout couldn't use `--frozen-lockfile`. Found by the
@@ -631,6 +672,67 @@ Per repo:
           that's expected.
         - pnpm 12's store is `/root/.local/share/pnpm/store/v11`, inside the cache mount.
 
+### Revisit (2026-10-16): the images against the MVP `main`
+
+All three built from `main` on amd64 and were run. Nothing is broken; the list below is what
+changed and what to do about it. arm64 is still untested (Phase 4).
+
+- [ ] **membership-management** (venv 71 → 101 MB with alembic, psycopg and tzdata; image 223 MB in
+  `docker image ls` on Docker 29, which isn't comparable with the earlier 270 MB measurement).
+  - **The Dockerfile needs no change.** Dependencies come from `uv.lock`, and the migrations live
+    inside the package (`script_location = membership_management.data:migrations`), so
+    `uv sync --no-editable` already installs them into `site-packages`.
+  - **Migration entry point exists:** `python -m membership_management.data.migrate`
+    (`data/migrate.py`) builds the Alembic config in code, so the image needs no `alembic.ini`,
+    and it logs each revision for CloudWatch. **Verified from the image:** on a fresh DB, with only
+    `ENVIRONMENT=production` and `MEMBERS_DATABASE_URL` (no API settings, no SQL Server URL), it
+    applied all 8 revisions and exited `0`; a rerun applied nothing. `env.py` sets
+    `lock_timeout` (`MEMBERS_MIGRATION_LOCK_TIMEOUT_SECONDS`, 5s) and `statement_timeout=0` for
+    long backfills. Same pattern as auth-server: one image, a one-off task before the service
+    update, never on app startup. No advisory lock yet (decided: add one, see the decision table).
+  - **The seed ships in the image** (it's inside the package): `python -m membership_management.data.seed`.
+    It refuses `ENVIRONMENT=production` (verified: exit `1`, "Refusing to seed a production
+    database."). Keeping it is fine (small, guarded) and handy for compose. Excluding it would mean
+    moving it out of the package.
+  - [ ] **Seed bug (blocks seeding compose; not Docker-related):** on an empty DB it fails with
+    `ValueError: list.remove(x): x not in list` in `seed/small_groups.py` (`members.remove(leader)`),
+    from the image and from `uv run`, with any `--rng-seed`. Leaders are popped from `men`, but a man
+    already taken as a regular of an earlier group is no longer in `members`. Fix in
+    membership-management (pick leaders for all groups before filling regulars, or skip taken men).
+    It's one transaction, so nothing is half-written.
+  - [ ] Small: add `alembic.ini` to `.dockerignore` (only local commands read it), so editing it
+    doesn't invalidate the `COPY . .` layer.
+  - New runtime config to set (compose and task definition): `MEMBERS_DATABASE_URL`,
+    `ASSIMILATION_DATABASE_URL` (renamed from `DATABASE_URL`), `INTERNAL_API_TOKEN` (required unless
+    `ENVIRONMENT=local`), `CHURCH_TIMEZONE`. The migrate task needs only `ENVIRONMENT` and
+    `MEMBERS_DATABASE_URL` (the owner role's URL).
+- [ ] **auth-server** (prod `node_modules` 68 → 143 MB; image 282 MB in `docker image ls` on Docker
+  29, not comparable with the earlier 320 MB).
+  - Works: started with `NODE_ENV=production`, `/api/auth/ok` 200, `/health` 503 with no DB (as
+    before), and `dist/lib/emails.js` (the compiled `.tsx` templates) imports under Node. `tsc`
+    handles the `.tsx` through `"jsx": "react-jsx"` in `tsconfig.json`; no Dockerfile change.
+  - No new drizzle migrations since the Dockerfile; `migrate.js` unchanged.
+  - **`react-email` size:** accepted (decision table). esbuild's Linux binary is in prod
+    `node_modules` (`allowBuilds: esbuild: false` only skips its install script, it doesn't keep the
+    package out).
+  - [ ] Still open from PR #34: `npm install -g --allow-scripts=pnpm` in the base stage, as in
+    staff-app.
+  - New runtime config: `MEMBERSHIP_API_URL` (internal, e.g. `http://membership-management:8000`)
+    and `INTERNAL_API_TOKEN`, both required under `NODE_ENV=production`.
+- [ ] **staff-app** (image 215 MB).
+  - Works: build with no env passes (next-intl compiles messages at build time), `/api/health`
+    200, CSS from `/_next/static` 200, full ICU present (Spanish dates in `America/Managua`
+    formatted correctly in the image). `pnpm run build` sets `npm_package_version`, so the app
+    version is inlined (`0.0.1`).
+  - **Smoke test URL changed:** `public/favicon.ico` was removed, so
+    `/_next/image?url=/favicon.ico&w=64&q=75` now returns **400**. Use
+    `/_next/image?url=/ministries/petra-mark.png&w=64&q=75` (200, `image/png`), or add a tiny
+    test image to `public/` so the smoke test doesn't depend on a church's logo. `app/icon.svg`
+    doesn't go through `sharp`.
+  - [ ] Smoke test script (still the open Phase 2 item): `/api/health`, one `/_next/static` CSS
+    file, and the `/_next/image` URL above.
+  - New runtime config: `CHURCH_TIMEZONE` (optional, must equal membership-management's).
+
 **New concepts:** layers & caching, multi-stage builds, image size, build args vs runtime env.
 
 ---
@@ -638,11 +740,30 @@ Per repo:
 ## Phase 3 — Local docker-compose (in this repo)
 `[ ]`
 
-- [ ] `compose.yaml` with the three apps plus a `postgres` container for auth-server.
-- [ ] membership-management points at the **Azure SQL dev copy**. Allowlist your home IP in
-      its firewall.
-- [ ] The `migrate` service runs before auth-server (`depends_on: condition: service_completed_successfully`).
-- [ ] Healthchecks plus `depends_on: condition: service_healthy`.
+- [ ] `compose.yaml` with the three apps plus a `postgres` container holding **both** Postgres
+      databases (`auth` and `members`, each with its own roles), mirroring RDS. An init
+      script in `/docker-entrypoint-initdb.d` creates the second database and the roles (it only
+      runs on an empty volume). Build contexts are `../auth-server`, `../membership-management`,
+      `../staff-app` (decision table).
+- [ ] membership-management points at the **Azure SQL dev copy** for `ASSIMILATION_DATABASE_URL`.
+      Allowlist your home IP in its firewall. Keep `Encrypt=yes`.
+- [ ] **Two migrate services**, one-shot, same images as the apps with a different `command`:
+      `auth-migrate` (`node dist/migrate.js`) and `members-migrate`
+      (`python -m membership_management.data.migrate`), each with the owner role's URL. Each app
+      waits on its own with `depends_on: condition: service_completed_successfully`.
+- [ ] Optional `members-seed` service (profile `seed`, so it only runs on
+      `docker compose --profile seed up`): `python -m membership_management.data.seed`, after
+      `members-migrate`. It refuses `ENVIRONMENT=production`, so it needs `staging` (or `local`) as its
+      own `ENVIRONMENT`. Needs the seed bug fixed first (Phase 2 revisit).
+- [ ] Healthchecks plus `depends_on: condition: service_healthy`. Startup order:
+      postgres → migrations → auth-server → membership-management → staff-app (membership fetches
+      the JWKS lazily, but staff-app needs both).
+- [ ] **Shared secret:** the same `INTERNAL_API_TOKEN` (32+ chars) in auth-server and
+      membership-management; auth-server's `MEMBERSHIP_API_URL=http://membership-management:8000`.
+      Test the link: invite a user whose email matches a member, accept, and check
+      `members.user_id` is set (auth-server logs a failure but doesn't block the invite).
+- [ ] `CHURCH_TIMEZONE` set once (an `x-` extension field or a shared env file) and used by
+      membership-management and staff-app.
 - [ ] `stop_grace_period: 30s` on auth-server. Compose's default is 10s, which is below
       auth-server's `SHUTDOWN_TIMEOUT_MS` (20s).
 - [ ] Only staff-app publishes a port to the host, to mirror prod (auth/membership internal-only).
@@ -655,7 +776,12 @@ Per repo:
 - [ ] membership-management needs `ENVIRONMENT` set as a real env var in compose (`environment:`
       or `env_file:` in `compose.yaml`; the image never reads a `.env` itself). Use `staging` or
       `production` there to exercise the prod code path (no `/docs`, `DEBUG` refused in production).
-- [ ] Test the whole flow: sign-up → email verification → sign-in → list applications (JWT path).
+- [ ] Test the whole flow: sign-up → email verification → sign-in → promote with `set-role.js` →
+      invite → accept (member linked) → list applications (SQL Server through the JWT path) →
+      small groups and a report (members DB) → sign in as a leader and check what a leader can
+      and can't see (permissions from the JWT).
+- [ ] Test shutdown for all three: `docker compose stop` during a slow request (in-flight requests
+      finish; staff-app exits 143, the others 0).
 
 **New concepts:** container networking/DNS by service name, which is the same idea as Service Connect.
 
@@ -676,7 +802,8 @@ Per repo:
 - [ ] VPC with 2 public + 2 private subnets across 2 AZs (the ALB needs 2 AZs).
 - [ ] fck-nat instance plus an Elastic IP, and private route tables → NAT.
 - [ ] Security groups: `alb` (443 from the internet) → `staff-app` → `auth-server` /
-      `membership` → `rds` (5432 from auth-server only).
+      `membership`; `membership` → `auth-server` (JWKS) and `auth-server` → `membership`
+      (`/internal/*`); `rds` (5432 from auth-server and membership only).
 - [ ] Add a server-level firewall rule on the prod **Azure SQL** server for the NAT's Elastic IP
       (Azure portal → SQL server → Networking). Allow that single IP only, not a range.
       Later, manage this rule in Terraform too, with the `azurerm` provider (optional).
@@ -692,7 +819,12 @@ Per repo:
 - [ ] Automated backups (7 days), deletion protection on.
 - [ ] Master password managed in Secrets Manager (RDS can do this for you).
 - [ ] App user with limited privileges (don't run the app as master).
-- [ ] Run migrations (one-off ECS task), then create the admin user.
+- [ ] **Two databases on the instance** (decision table): `auth` and `members`, each with an owner
+      role (DDL, used only by its migrate task) and an app role (DML only), and `REVOKE CONNECT ...
+      FROM PUBLIC` on each database so a service's role can't connect to the other one. Budget
+      `max_connections` across both pools, both migrate tasks and admin tools.
+- [ ] Run migrations for both (one-off ECS tasks: `auth-server-migrate`,
+      `membership-management-migrate`), then create the admin user.
       **Admin approach (decided 2026-09-30):** a one-off admin process from the same image
       (12-factor XII). The person signs up normally in staff-app (they choose their own password and
       get the `pending` role), then a one-off task runs `node dist/scripts/set-role.js <email> admin`.
@@ -710,7 +842,10 @@ Per repo:
 `[ ]`
 
 - [ ] **SSM Parameter Store `SecureString`** for app secrets (free) instead of Secrets Manager
-      ($0.40/secret/mo): `BETTER_AUTH_SECRET`, `DATABASE_URL`, `ASSIMILATION_DATABASE_URL`, `RESEND_API_KEY`.
+      ($0.40/secret/mo). auth-server: `BETTER_AUTH_SECRET`, `DATABASE_URL`, `RESEND_API_KEY`,
+      `INTERNAL_API_TOKEN`. membership-management: `ASSIMILATION_DATABASE_URL`,
+      `MEMBERS_DATABASE_URL`, `INTERNAL_API_TOKEN` (the same parameter as auth-server's, read by
+      both execution roles). Migrate tasks: the owner-role URLs, separate parameters.
 - [ ] ECS task definitions reference them through `secrets:` (injected as env vars at start).
       The task *execution role* gets read access only to its own parameters.
 
@@ -723,8 +858,15 @@ Per repo:
 - [ ] 3 task definitions (start at 0.25 vCPU / 0.5 GB; staff-app may need 1 GB), ARM64,
       logs → CloudWatch (retention 14–30 days, not "never expire").
 - [ ] 3 services, desired count 1 each. Deployment circuit breaker with rollback on.
+- [ ] Plus 2 migrate task definitions (`auth-server-migrate`, `membership-management-migrate`):
+      same images, a command override, only the owner-role DB URL (and `ENVIRONMENT` for
+      membership).
 - [ ] membership-management task definition: **`ENVIRONMENT=production`** (required; the image
-      doesn't set it), `DEBUG` unset or `false` (`true` is refused at startup in production).
+      doesn't set it), `DEBUG` unset or `false` (`true` is refused at startup in production),
+      `INTERNAL_API_TOKEN` (required outside `local`), `CHURCH_TIMEZONE`.
+- [ ] auth-server task definition: `MEMBERSHIP_API_URL` (Service Connect,
+      `http://membership-management:8000`) and `INTERNAL_API_TOKEN` (both required in production).
+- [ ] staff-app task definition: `CHURCH_TIMEZONE`, equal to membership-management's.
 - [ ] Container `stopTimeout` above auth-server's `SHUTDOWN_TIMEOUT_MS` (30s default vs 20s is
       fine; if you raise one, raise the other).
 - [ ] **Verify Service Connect draining.** Does ECS remove auth-server from Service Connect before
@@ -804,7 +946,8 @@ which client-IP headers you can trust.
 
 - [ ] **CI** in each app repo on PRs: lint, type-check, `docker build` (no push).
 - [ ] **CD** on push to `main`: build → push to ECR (SHA tag) → render the task definition with
-      the new image → `aws ecs deploy`. auth-server runs the migrate task first.
+      the new image → `aws ecs deploy`. auth-server and membership-management run their migrate
+      task first. A new permission name: deploy auth-server before the services that check it.
 - [ ] **GitHub OIDC → IAM role** (no long-lived AWS keys in GitHub secrets). Scope the role's
       trust to `repo:Luis-Palacios/<repo>:ref:refs/heads/main`.
 - [ ] Optional: GitHub `production` environment with required approval.
@@ -821,6 +964,9 @@ which client-IP headers you can trust.
   - [ ] Convention: expand/contract (backward-compatible) migrations, so the running old code
         always works with the new schema.
   - [ ] Fail CI if `pnpm why drizzle-kit --prod` returns anything (see the drizzle-kit leak, Phase 2).
+  - [ ] membership-management: CI runs `alembic upgrade head` on a fresh Postgres, then
+        `alembic check` (fails if models changed without a migration). Alembic revisions form a
+        chain, so two PRs with migrations give two heads; `alembic heads` must print exactly one.
 
 ---
 
