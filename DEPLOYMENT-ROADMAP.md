@@ -14,7 +14,8 @@ Started: 2026-09-21
 
 ## Where we left off (2026-10-16)
 
-**Phases 0 and 1 are done. Phase 2's three Dockerfiles are merged** (auth-server
+**Phases 0, 1 and 2 are done; next is Phase 3 (compose).** Phase 2's Dockerfiles were merged
+first (auth-server
 [PR #18](https://github.com/Luis-Palacios/auth-server/pull/18), membership-management
 [PR #20](https://github.com/Luis-Palacios/membership-management/pull/20), staff-app
 [PR #34](https://github.com/Luis-Palacios/staff-app/pull/34)). Deployment was then paused on purpose
@@ -58,16 +59,26 @@ phases.** Details per repo are in Phase 2 under "Revisit (2026-10-16)". In short
   decision table).
 - staff-app: works. The smoke test can't use `favicon.ico` anymore.
 
-**Next, in order:**
-1. ~~Decisions from the revisit~~ (done 2026-10-16, in the decision table).
-2. Fix the membership-management seed bug (Phase 2 revisit), so compose can seed a dev DB.
-3. Small changes from the revisit (one at a time, previewed): the alembic advisory lock
-   (decided), auth-server `--allow-scripts`, the staff-app smoke test script.
-4. Phase 3 (compose).
+**Revisit done (merged 2026-10-16):** the decisions are in the decision table, and the fixes
+are merged: membership-management seed fix
+([PR #38](https://github.com/Luis-Palacios/membership-management/pull/38), `86ae6fe`) and migration
+advisory lock ([PR #39](https://github.com/Luis-Palacios/membership-management/pull/39), `81790d1`);
+auth-server pnpm pin + `--allow-scripts`
+([PR #24](https://github.com/Luis-Palacios/auth-server/pull/24), `a106e37`); staff-app pnpm pin +
+smoke test ([PR #68](https://github.com/Luis-Palacios/staff-app/pull/68), `e7da00d`, `3fc8c13`);
+this roadmap ([PR #8](https://github.com/Luis-Palacios/management-infra/pull/8), `a38f76a`). Along
+the way the review found that **neither Node image had installed the pinned pnpm** (see the
+Phase 2 lessons).
+
+**Next: Phase 3 (compose).** Start with `compose.yaml`, the Postgres init script for the two
+databases, and the two migrate services.
 
 State of branches:
-- **management-infra `docs/phase-2-staff-app`** was rebase-merged; delete it. So were the old
-  `deploy/*`, `docs/*` and `feature/*` branches in the app repos (git lists them as unmerged).
+- **Merged branches to delete** (rebase-merged, so git lists them as unmerged; their content is
+  on `main`, checked 2026-10-16): membership-management `fix-seed-leader-pick` and
+  `migration-advisory-lock`, auth-server `pnpm-allow-scripts`, staff-app `pnpm-pin-and-smoke-test`,
+  management-infra `docs/revisit-dockerfiles-for-mvp` and `docs/phase-2-staff-app`, plus the old
+  `deploy/*`, `docs/*` and `feature/*` branches in the app repos.
 - **Windows clone of staff-app:** before pulling `main`, delete any untracked local
   `pnpm-lock.yaml`, or the pull refuses to overwrite it.
 - **Line endings:** auth-server, membership-management and staff-app enforce LF with
@@ -420,7 +431,7 @@ Service Connect.
 ---
 
 ## Phase 2 — Dockerfiles (one per app repo)
-`[~]`
+`[x]`
 
 Besides the `Dockerfile` itself, each repo needs:
 
@@ -441,6 +452,14 @@ Besides the `Dockerfile` itself, each repo needs:
 - It's a denylist (the owner's choice: more common and easier to read), so secrets get the broadest
   patterns.
 - Every line should match something real in the repo, so no template leftovers.
+
+**`ARG` scope lesson (found in the 2026-10-16 revisit):** an `ARG` declared before the first `FROM`
+is visible only to `FROM` lines. A stage that uses it in `RUN` must redeclare it (a bare
+`ARG PNPM_VERSION`), or it expands to an empty string with no error. Both Node images ran
+`npm install -g pnpm@`, i.e. the latest pnpm (12.14.0), which then downloaded the pinned 12.3.4
+through `devEngines` on every build: the lockfile was still honoured, so nothing looked wrong. Found
+only by checking `pnpm --version` inside the stage. Check the version a pinned tool *actually* has,
+not just the Dockerfile text.
 - Keeping `.ts` out of the *final image* is the multi-stage build's job, not `.dockerignore`'s:
   the build needs the `.ts` files.
 - `.git` is excluded because it holds the full history (including deleted secrets) and busts the
@@ -510,7 +529,8 @@ Per repo:
         rebuild and pull, and then the change arrives untested. Bumps should come as their own
         commits (Dependabot/Renovate, Phase 10).
       - pnpm comes from `npm i -g` and lives only in the build stages. `ARG PNPM_VERSION` must
-        match `packageManager`.
+        match `packageManager`, and must be redeclared inside the stage (fixed in PR #24, see the
+        `ARG` scope lesson above).
       - **drizzle-kit leak (found by measuring):** better-auth declares `drizzle-kit` as an
         optional peer and never imports it. pnpm satisfied that peer with our devDependency, so
         `--prod` shipped drizzle-kit and esbuild (~105 MB). Fixed with a `readPackage` hook in
@@ -608,13 +628,12 @@ Per repo:
       - Migrations need DDL rights and the app user doesn't have them (Phase 6). `run-task` overrides
         can't change `secrets:`, so the migrate task needs its **own task definition**
         (`auth-server-migrate`: same image, owner-level `DATABASE_URL`).
-- [~] **staff-app** (Dockerfile done, smoke test script left): Next.js standalone output → `node server.js`. Copy `.next/static` →
+- [x] **staff-app**: Next.js standalone output → `node server.js`. Copy `.next/static` →
       `.next/standalone/.next/static` and `public` → `.next/standalone/public`, and set
       `ENV HOSTNAME=0.0.0.0`. Add a **post-build smoke test** (in CI or a script): run the image,
       then fetch `/api/health` **and** one `/_next/static` file. A missing static copy leaves
       the health check at 200, so only the asset fetch catches it.
-      **Dockerfile merged (PR #34); the smoke test script is still open** (see the revisit below
-      for its new image URL). Findings and decisions:
+      **Dockerfile merged (PR #34); smoke test merged in PR #68** (see the revisit below). Findings and decisions:
       - **The lockfile had never been committed** ([PR #31](https://github.com/Luis-Palacios/staff-app/pull/31)).
         A leftover template block in `.gitignore` ignored every lockfile, so `pnpm-lock.yaml` existed
         only on the Mac. A build from a checkout couldn't use `--frozen-lockfile`. Found by the
@@ -674,10 +693,10 @@ Per repo:
 
 ### Revisit (2026-10-16): the images against the MVP `main`
 
-All three built from `main` on amd64 and were run. Nothing is broken; the list below is what
-changed and what to do about it. arm64 is still untested (Phase 4).
+All three built from `main` on amd64 and were run. Nothing was broken; the list below is what
+changed and what was done about it. arm64 is still untested (Phase 4).
 
-- [ ] **membership-management** (venv 71 → 101 MB with alembic, psycopg and tzdata; image 223 MB in
+- [x] **membership-management** (venv 71 → 101 MB with alembic, psycopg and tzdata; image 223 MB in
   `docker image ls` on Docker 29, which isn't comparable with the earlier 270 MB measurement).
   - **The Dockerfile needs no change.** Dependencies come from `uv.lock`, and the migrations live
     inside the package (`script_location = membership_management.data:migrations`), so
@@ -689,24 +708,31 @@ changed and what to do about it. arm64 is still untested (Phase 4).
     applied all 8 revisions and exited `0`; a rerun applied nothing. `env.py` sets
     `lock_timeout` (`MEMBERS_MIGRATION_LOCK_TIMEOUT_SECONDS`, 5s) and `statement_timeout=0` for
     long backfills. Same pattern as auth-server: one image, a one-off task before the service
-    update, never on app startup. No advisory lock yet (decided: add one, see the decision table).
+    update, never on app startup.
   - **The seed ships in the image** (it's inside the package): `python -m membership_management.data.seed`.
     It refuses `ENVIRONMENT=production` (verified: exit `1`, "Refusing to seed a production
     database."). Keeping it is fine (small, guarded) and handy for compose. Excluding it would mean
     moving it out of the package.
-  - [ ] **Seed bug (blocks seeding compose; not Docker-related):** on an empty DB it fails with
+  - [x] **Advisory lock** ([PR #39](https://github.com/Luis-Palacios/membership-management/pull/39),
+    `81790d1`): `pg_advisory_xact_lock` in `env.py` before `run_migrations()`, then
+    `SET LOCAL lock_timeout` (moved out of the connect options). Tested with `uv run` on a throwaway
+    DB: two runs at once both exit `0` (before, the second exited `1` with `UniqueViolation`);
+    a run waits 12 s on a held lock and succeeds; a table held by another session gives
+    `LockNotAvailable` after ~5 s, exit `1`, and a rerun applies it (so `lock_timeout` firing is
+    now tested here, still not in auth-server); `--sql` output is unchanged.
+  - [x] **Seed bug** ([PR #38](https://github.com/Luis-Palacios/membership-management/pull/38),
+    `86ae6fe`; not Docker-related): on an empty DB it failed with
     `ValueError: list.remove(x): x not in list` in `seed/small_groups.py` (`members.remove(leader)`),
     from the image and from `uv run`, with any `--rng-seed`. Leaders are popped from `men`, but a man
-    already taken as a regular of an earlier group is no longer in `members`. Fix in
-    membership-management (pick leaders for all groups before filling regulars, or skip taken men).
-    It's one transaction, so nothing is half-written.
-  - [ ] Small: add `alembic.ini` to `.dockerignore` (only local commands read it), so editing it
-    doesn't invalidate the `COPY . .` layer.
+    already taken as a regular of an earlier group was no longer in `members`. Fixed by picking
+    every group's leaders before any regulars; verified with 9 `--rng-seed` values on a fresh DB.
+  - Not done, not blocking: add `alembic.ini` to `.dockerignore` (only local commands read it), so
+    editing it doesn't invalidate the `COPY . .` layer.
   - New runtime config to set (compose and task definition): `MEMBERS_DATABASE_URL`,
     `ASSIMILATION_DATABASE_URL` (renamed from `DATABASE_URL`), `INTERNAL_API_TOKEN` (required unless
     `ENVIRONMENT=local`), `CHURCH_TIMEZONE`. The migrate task needs only `ENVIRONMENT` and
     `MEMBERS_DATABASE_URL` (the owner role's URL).
-- [ ] **auth-server** (prod `node_modules` 68 → 143 MB; image 282 MB in `docker image ls` on Docker
+- [x] **auth-server** (prod `node_modules` 68 → 143 MB; image 282 MB in `docker image ls` on Docker
   29, not comparable with the earlier 320 MB).
   - Works: started with `NODE_ENV=production`, `/api/auth/ok` 200, `/health` 503 with no DB (as
     before), and `dist/lib/emails.js` (the compiled `.tsx` templates) imports under Node. `tsc`
@@ -715,11 +741,13 @@ changed and what to do about it. arm64 is still untested (Phase 4).
   - **`react-email` size:** accepted (decision table). esbuild's Linux binary is in prod
     `node_modules` (`allowBuilds: esbuild: false` only skips its install script, it doesn't keep the
     package out).
-  - [ ] Still open from PR #34: `npm install -g --allow-scripts=pnpm` in the base stage, as in
-    staff-app.
+  - [x] **pnpm pin + `--allow-scripts=pnpm`** ([PR #24](https://github.com/Luis-Palacios/auth-server/pull/24),
+    `a106e37`): `ARG PNPM_VERSION` redeclared in the stage (see the `ARG` scope lesson). Verified:
+    the `base` stage has pnpm 12.3.4 as the native binary, no npm warning, and the image builds
+    with prod `node_modules` unchanged.
   - New runtime config: `MEMBERSHIP_API_URL` (internal, e.g. `http://membership-management:8000`)
     and `INTERNAL_API_TOKEN`, both required under `NODE_ENV=production`.
-- [ ] **staff-app** (image 215 MB).
+- [x] **staff-app** (image 215 MB).
   - Works: build with no env passes (next-intl compiles messages at build time), `/api/health`
     200, CSS from `/_next/static` 200, full ICU present (Spanish dates in `America/Managua`
     formatted correctly in the image). `pnpm run build` sets `npm_package_version`, so the app
@@ -729,8 +757,15 @@ changed and what to do about it. arm64 is still untested (Phase 4).
     `/_next/image?url=/ministries/petra-mark.png&w=64&q=75` (200, `image/png`), or add a tiny
     test image to `public/` so the smoke test doesn't depend on a church's logo. `app/icon.svg`
     doesn't go through `sharp`.
-  - [ ] Smoke test script (still the open Phase 2 item): `/api/health`, one `/_next/static` CSS
-    file, and the `/_next/image` URL above.
+  - [x] **pnpm pin** ([PR #68](https://github.com/Luis-Palacios/staff-app/pull/68), `e7da00d`):
+    same `ARG` fix as auth-server.
+  - [x] **Smoke test** (PR #68, `3fc8c13`): `docker build -t staff-app:dev .` then
+    `pnpm smoke staff-app:dev` (`scripts/smoke-test.mjs`, Node only, so it runs the same on
+    Windows, macOS and CI). It checks `/api/health`, one `/_next/static` CSS file (`text/css`) and
+    `/_next/image` of the logo (path read from `logoUrl` in `config/site.ts`, owner's choice) as
+    `image/webp`. **The content types are the real checks:** tested with broken images, a missing
+    `.next/static` gave **200 `text/html`** for the CSS URL, and a missing sharp gave **200
+    `image/png`** (the original, unconverted). A status-only check passes both.
   - New runtime config: `CHURCH_TIMEZONE` (optional, must equal membership-management's).
 
 **New concepts:** layers & caching, multi-stage builds, image size, build args vs runtime env.
@@ -944,7 +979,8 @@ which client-IP headers you can trust.
 ## Phase 10 — GitHub Actions CI/CD
 `[ ]`
 
-- [ ] **CI** in each app repo on PRs: lint, type-check, `docker build` (no push).
+- [ ] **CI** in each app repo on PRs: lint, type-check, `docker build` (no push). staff-app then
+      runs `pnpm smoke <image>` on the built image.
 - [ ] **CD** on push to `main`: build → push to ECR (SHA tag) → render the task definition with
       the new image → `aws ecs deploy`. auth-server and membership-management run their migrate
       task first. A new permission name: deploy auth-server before the services that check it.
