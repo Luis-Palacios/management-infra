@@ -4,6 +4,9 @@
 
 name: ekklesiaio
 
+# Set once: membership-management and staff-app must agree on the church's calendar date.
+x-church-timezone: &church-timezone America/Managua
+
 services:
   postgres:
     image: postgres:18.6-alpine
@@ -86,6 +89,42 @@ services:
       postgres:
         condition: service_healthy
       auth-migrate:
+        condition: service_completed_successfully
+    # No ports: internal-only, as in prod.
+
+  # Same image as members-migrate. ENVIRONMENT=production as on ECS: the prod code path (no /docs,
+  # DEBUG refused, INTERNAL_API_TOKEN required) and no .env lookup. No depends_on on auth-server:
+  # the JWKS is fetched lazily on the first request with a token, and ECS has no start order
+  # between services either.
+  membership-management:
+    build: ../membership-management
+    image: ekklesiaio/membership-management:local
+    environment:
+      ENVIRONMENT: production
+      # Internal address for the JWKS; iss/aud are the public URL (auth-server's BETTER_AUTH_URL).
+      AUTH_SERVER_URL: http://auth-server:5000
+      JWT_ISSUER: http://localhost:3001
+      JWT_AUDIENCE: http://localhost:3001
+      MEMBERS_DATABASE_URL: postgresql+psycopg://members_app:${MEMBERS_APP_PASSWORD:?set it in .env}@postgres:5432/members
+      # The Azure SQL dev copy; its firewall must allow your public IP.
+      ASSIMILATION_DATABASE_URL: ${ASSIMILATION_DATABASE_URL:?set it in .env}
+      INTERNAL_API_TOKEN: ${INTERNAL_API_TOKEN:?set it in .env}
+      CHURCH_TIMEZONE: *church-timezone
+    # Above GRACEFUL_SHUTDOWN_TIMEOUT_SECONDS (30s default, equal to REQUEST_TIMEOUT_SECONDS so the
+    # longest allowed request can finish), or Compose SIGKILLs mid-drain (its default is 10s).
+    stop_grace_period: 40s
+    healthcheck:
+      # Liveness only. No curl/wget in the image, so Python's urllib (raises on non-2xx).
+      test: [ "CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health/live', timeout=2)" ]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+      start_period: 15s
+      start_interval: 1s
+    depends_on:
+      postgres:
+        condition: service_healthy
+      members-migrate:
         condition: service_completed_successfully
     # No ports: internal-only, as in prod.
 

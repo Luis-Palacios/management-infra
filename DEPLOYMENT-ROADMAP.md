@@ -848,10 +848,23 @@ changed and what was done about it. arm64 is still untested (Phase 4).
         "Shutdown complete". **Phase 8 note:** in prod the chain is ALB → staff-app → auth-server
         and staff-app forwards `X-Forwarded-For` untouched, so `TRUSTED_PROXIES` (the VPC CIDR) has
         to cover staff-app's tasks, not just the ALB.
-  - [ ] membership-management.
+  - [x] **membership-management** (2026-10-17): same image as `members-migrate`,
+        `ENVIRONMENT=production`, `AUTH_SERVER_URL=http://auth-server:5000` with
+        `JWT_ISSUER`/`JWT_AUDIENCE` = `http://localhost:3001`, `members_app` URL, the Azure SQL dev
+        URL and `INTERNAL_API_TOKEN` from `.env`, `stop_grace_period: 40s`, a `python -c urllib`
+        probe on `/health/live`, no ports. **No `depends_on` on auth-server** (unlike the startup
+        order first written below): the JWKS is fetched lazily and auth-server's call is
+        best-effort, so neither needs the other at boot, and ECS has no start order between
+        services. **Verified:** healthy in ~3s; from another container `/health` shows both DBs
+        `ok` (Azure SQL dev copy reached, ~2s on the first, cold call); `/docs` 404 and `/me`
+        without a token 401 (prod code path); `/internal/member-links/accepted-invite` 401 with a
+        wrong `X-Internal-Token`, 422 with the right one and an empty body; `docker compose stop`
+        exits `0` after "Application shutdown complete".
   - [ ] staff-app.
-- [ ] membership-management points at the **Azure SQL dev copy** for `ASSIMILATION_DATABASE_URL`.
-      Allowlist your home IP in its firewall. Keep `Encrypt=yes`.
+- [x] membership-management points at the **Azure SQL dev copy** for `ASSIMILATION_DATABASE_URL`.
+      Allowlist your home IP in its firewall. Keep `Encrypt=yes` (ODBC Driver 18's default, but set
+      it in the URL so it doesn't depend on that). The whole URL is a secret (password inside), so
+      it's in `.env`; an `@` in Azure's `user@server` username belongs URL-encoded as `%40`.
 - [ ] Optional `members-seed` service (profile `seed`, so it only runs on
       `docker compose --profile seed up`): `python -m membership_management.data.seed`, after
       `members-migrate`. It refuses `ENVIRONMENT=production`, so it needs `staging` (or `local`) as its
@@ -864,14 +877,15 @@ changed and what was done about it. arm64 is still untested (Phase 4).
       use busybox `wget -qO- http://127.0.0.1:<port>/health/live` (staff-app: `/api/health`);
       membership-management (Python slim, no curl/wget) uses
       `python -c "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health/live', timeout=2)"`.
-      Startup order: postgres → migrations → auth-server → membership-management → staff-app (membership fetches
-      the JWKS lazily, but staff-app needs both).
+      Startup order: postgres → migrations → auth-server and membership-management (no order
+      between them, see the membership-management sub-item) → staff-app, which needs both.
 - [ ] **Shared secret:** the same `INTERNAL_API_TOKEN` (32+ chars) in auth-server and
       membership-management; auth-server's `MEMBERSHIP_API_URL=http://membership-management:8000`.
       Test the link: invite a user whose email matches a member, accept, and check
       `members.user_id` is set (auth-server logs a failure but doesn't block the invite).
-- [ ] `CHURCH_TIMEZONE` set once (an `x-` extension field or a shared env file) and used by
-      membership-management and staff-app.
+- [~] `CHURCH_TIMEZONE` set once (an `x-` extension field or a shared env file) and used by
+      membership-management and staff-app. Done as `x-church-timezone: &church-timezone` at the
+      top of `compose.yaml`; membership-management uses it, staff-app still to do.
 - [ ] `stop_grace_period: 30s` on auth-server. Compose's default is 10s, which is below
       auth-server's `SHUTDOWN_TIMEOUT_MS` (20s).
 - [ ] Only staff-app publishes a port to the host, to mirror prod (auth/membership internal-only).
@@ -884,8 +898,8 @@ changed and what was done about it. arm64 is still untested (Phase 4).
       values are written in `compose.yaml`, where they're reviewable; only secrets come from the
       gitignored `.env`, each `${VAR:?}` so a missing one fails fast. It mirrors ECS: plain
       `environment` in the task definition, `secrets:` from SSM (Phase 7). Each service adds its
-      keys as it lands (auth-server: done).
-- [ ] membership-management needs `ENVIRONMENT` set as a real env var in compose (`environment:`
+      keys as it lands (auth-server and membership-management: done).
+- [x] membership-management needs `ENVIRONMENT` set as a real env var in compose (`environment:`
       or `env_file:` in `compose.yaml`; the image never reads a `.env` itself). Use `staging` or
       `production` there to exercise the prod code path (no `/docs`, `DEBUG` refused in production).
 - [ ] Test the whole flow: sign-up → email verification → sign-in → promote with `set-role.js` →
@@ -985,7 +999,10 @@ changed and what was done about it. arm64 is still untested (Phase 4).
       `http://membership-management:8000`) and `INTERNAL_API_TOKEN` (both required in production).
 - [ ] staff-app task definition: `CHURCH_TIMEZONE`, equal to membership-management's.
 - [ ] Container `stopTimeout` above auth-server's `SHUTDOWN_TIMEOUT_MS` (30s default vs 20s is
-      fine; if you raise one, raise the other).
+      fine; if you raise one, raise the other). **membership-management needs ~40s:** its
+      `GRACEFUL_SHUTDOWN_TIMEOUT_SECONDS` is 30s (equal to `REQUEST_TIMEOUT_SECONDS`, so the
+      longest allowed request can finish), the same as ECS's default, so it'd be SIGKILLed at the
+      end of its drain window (found in Phase 3, where compose has `stop_grace_period: 40s`).
 - [ ] **Verify Service Connect draining.** Does ECS remove auth-server from Service Connect before
       sending SIGTERM, or do requests keep arriving after it? Test it by redeploying while running
       a request loop through staff-app and watching for errors. If errors show up, add a short
