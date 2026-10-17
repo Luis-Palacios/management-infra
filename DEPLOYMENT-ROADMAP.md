@@ -14,7 +14,8 @@ Started: 2026-09-21
 
 ## Where we left off (2026-10-16)
 
-**Phases 0, 1 and 2 are done; Phase 3 (compose) is in progress: the Postgres step is done.**
+**Phases 0, 1 and 2 are done; Phase 3 (compose) is in progress: Postgres and the migrations
+are done.**
 Phase 2's Dockerfiles were merged
 first (auth-server
 [PR #18](https://github.com/Luis-Palacios/auth-server/pull/18), membership-management
@@ -72,18 +73,21 @@ the way the review found that **neither Node image had installed the pinned pnpm
 Phase 2 lessons).
 
 **Phase 3 is done in steps, one PR each:** (1) Postgres only: `compose.yaml`, the init script
-for the two databases and their roles, `.env.example` (done, see Phase 3); (2) the two migrate
-services; (3) the three apps, healthchecks and startup order; (4) the full-flow and shutdown tests.
-**Next: step 2, `auth-migrate` and `members-migrate`.**
+for the two databases and their roles, `.env.example`
+([PR #10](https://github.com/Luis-Palacios/management-infra/pull/10), `04309b3`); (2) the two
+migrate services (done, see Phase 3); (3) the three apps, healthchecks and startup order; (4) the
+full-flow and shutdown tests. **Next: step 3.** Settle the `/health` open decision first, since the
+healthchecks depend on it.
 
 State of branches:
-- **Merged branches deleted** (2026-10-16, local and remote, in all four repos). Each was checked
-  first: its PR merged at the branch's exact tip, and `git cherry origin/main` shows nothing
-  missing (rebase merges make `git branch --merged` useless here). **Kept, with work not on
-  `main`:** auth-server `foo` (local only, one README commit about creating a super admin),
-  staff-app `design-system-resync-instructions` (pushed, never opened as a PR) and
-  `feat/auth-proxy-and-role-nav-gating` (PR #10 closed unmerged, probably superseded by
-  `phase-3-auth-proxy` and `phase-3.2-route-protection`). Decide on those three.
+- **All branches but `main` deleted** (2026-10-16, local and remote, in all four repos). Each
+  merged one was checked first: its PR merged at the branch's exact tip, and
+  `git cherry origin/main` shows nothing missing (rebase merges make `git branch --merged` useless
+  here). Three had work not on `main` and were deleted on the owner's call: auth-server `foo`
+  (`f7327b4`, README note on creating a super admin), staff-app `design-system-resync-instructions`
+  (`1ae2ec7`, never a PR) and `feat/auth-proxy-and-role-nav-gating` (`45f6a88`, PR #10 closed
+  unmerged, superseded by `phase-3-auth-proxy` and `phase-3.2-route-protection`). While GitHub
+  keeps the commits, `git branch <name> <sha>` brings one back.
 - **Windows clone of staff-app:** before pulling `main`, delete any untracked local
   `pnpm-lock.yaml`, or the pull refuses to overwrite it.
 - **Line endings:** auth-server, membership-management and staff-app enforce LF with
@@ -787,7 +791,9 @@ changed and what was done about it. arm64 is still untested (Phase 4).
 ## Phase 3 — Local docker-compose (in this repo)
 `[~]`
 
-- [x] **Postgres** (step 1, 2026-10-16): `compose.yaml` with a `postgres:18.6-alpine` service (same
+- [x] **Postgres** (step 1, 2026-10-16,
+      [PR #10](https://github.com/Luis-Palacios/management-infra/pull/10), `04309b3`):
+      `compose.yaml` with a `postgres:18.6-alpine` service (same
       major as local dev; pick it on RDS too) holding **both** databases, mirroring RDS.
       `postgres/initdb/01-databases.sh` creates `auth` and `members`, each with an owner role
       (`*_owner`: owns the database, runs migrations) and an app role (`*_app`: `CONNECT`, schema
@@ -813,19 +819,40 @@ changed and what was done about it. arm64 is still untested (Phase 4).
   - Postgres 18 images mount the volume at `/var/lib/postgresql`, not `.../data`.
   - The init script runs only on an empty volume: after changing it or a password,
     `docker compose down -v`.
+- [x] **Two migrate services** (step 2, 2026-10-16), one-shot, same images as the apps with a
+      different `command` (12-factor XII, like the ECS migrate tasks): `auth-migrate`
+      (`node dist/migrate.js`, needs only `DATABASE_URL`) and `members-migrate`
+      (`python -m membership_management.data.migrate`, needs only `ENVIRONMENT=production` and
+      `MEMBERS_DATABASE_URL`), each with its `*_owner` URL. `build:` plus `image:`
+      (`ekklesiaio/<repo>:local`), so the app services in step 3 can use the same image.
+      `restart` stays `"no"`. **Verified:** both exit `0` on a fresh DB (drizzle creates its own
+      `drizzle` schema for `__drizzle_migrations`); a rerun applies nothing; every table in both
+      DBs is owned by `*_owner`; from a separate container the `*_app` roles can read their tables
+      but `auth_app` gets `permission denied for schema drizzle` (right: the app has no business in
+      the migration history, and default privileges cover tables, not schema `USAGE`); a wrong
+      password exits `1` for both (`docker compose run --rm -e <URL>=... <service>` overrides it
+      for one run), which `service_completed_successfully` relies on. First **arm64** build of both
+      images (Apple silicon): works, including `msodbcsql18`.
+  - **Lesson: `image:` names whatever you build.** `auth-migrate` first had
+    `build: ../membership-management`, so the Python image was tagged `ekklesiaio/auth-server:local`
+    and failed with `exec: "node": executable file not found in $PATH`. Here it failed loudly; in CI
+    the same slip would push the wrong image to the wrong ECR repo. A smoke test per image (like
+    staff-app's) catches it (Phase 10).
 - [ ] The three apps in `compose.yaml`. Build contexts are `../auth-server`,
       `../membership-management`, `../staff-app` (decision table). Each app connects with its
-      `*_app` role; only the migrate services use `*_owner`.
+      `*_app` role; only the migrate services use `*_owner`. Each app waits on its migration with
+      `depends_on: condition: service_completed_successfully`. Decide whether app and migrate
+      services both keep `build:` (Compose builds the same context twice; the second is a full
+      cache hit) or only one builds and the other just names the `image:`.
 - [ ] membership-management points at the **Azure SQL dev copy** for `ASSIMILATION_DATABASE_URL`.
       Allowlist your home IP in its firewall. Keep `Encrypt=yes`.
-- [ ] **Two migrate services**, one-shot, same images as the apps with a different `command`:
-      `auth-migrate` (`node dist/migrate.js`) and `members-migrate`
-      (`python -m membership_management.data.migrate`), each with the owner role's URL. Each app
-      waits on its own with `depends_on: condition: service_completed_successfully`.
 - [ ] Optional `members-seed` service (profile `seed`, so it only runs on
       `docker compose --profile seed up`): `python -m membership_management.data.seed`, after
       `members-migrate`. It refuses `ENVIRONMENT=production`, so it needs `staging` (or `local`) as its
-      own `ENVIRONMENT`. Needs the seed bug fixed first (Phase 2 revisit).
+      own `ENVIRONMENT`. The seed bug is fixed (membership-management PR #38). Which role: plain
+      inserts would work as `members_app`, but `--reset` runs `TRUNCATE ... RESTART IDENTITY`,
+      which needs the `TRUNCATE` privilege and sequence ownership, so give it the `members_owner`
+      URL (dev-only data, never run in prod).
 - [ ] Healthchecks plus `depends_on: condition: service_healthy`. Startup order:
       postgres → migrations → auth-server → membership-management → staff-app (membership fetches
       the JWKS lazily, but staff-app needs both).
