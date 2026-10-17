@@ -14,7 +14,8 @@ Started: 2026-09-21
 
 ## Where we left off (2026-10-16)
 
-**Phases 0, 1 and 2 are done; next is Phase 3 (compose).** Phase 2's Dockerfiles were merged
+**Phases 0, 1 and 2 are done; Phase 3 (compose) is in progress: the Postgres step is done.**
+Phase 2's Dockerfiles were merged
 first (auth-server
 [PR #18](https://github.com/Luis-Palacios/auth-server/pull/18), membership-management
 [PR #20](https://github.com/Luis-Palacios/membership-management/pull/20), staff-app
@@ -70,15 +71,19 @@ this roadmap ([PR #8](https://github.com/Luis-Palacios/management-infra/pull/8),
 the way the review found that **neither Node image had installed the pinned pnpm** (see the
 Phase 2 lessons).
 
-**Next: Phase 3 (compose).** Start with `compose.yaml`, the Postgres init script for the two
-databases, and the two migrate services.
+**Phase 3 is done in steps, one PR each:** (1) Postgres only: `compose.yaml`, the init script
+for the two databases and their roles, `.env.example` (done, see Phase 3); (2) the two migrate
+services; (3) the three apps, healthchecks and startup order; (4) the full-flow and shutdown tests.
+**Next: step 2, `auth-migrate` and `members-migrate`.**
 
 State of branches:
-- **Merged branches to delete** (rebase-merged, so git lists them as unmerged; their content is
-  on `main`, checked 2026-10-16): membership-management `fix-seed-leader-pick` and
-  `migration-advisory-lock`, auth-server `pnpm-allow-scripts`, staff-app `pnpm-pin-and-smoke-test`,
-  management-infra `docs/revisit-dockerfiles-for-mvp` and `docs/phase-2-staff-app`, plus the old
-  `deploy/*`, `docs/*` and `feature/*` branches in the app repos.
+- **Merged branches deleted** (2026-10-16, local and remote, in all four repos). Each was checked
+  first: its PR merged at the branch's exact tip, and `git cherry origin/main` shows nothing
+  missing (rebase merges make `git branch --merged` useless here). **Kept, with work not on
+  `main`:** auth-server `foo` (local only, one README commit about creating a super admin),
+  staff-app `design-system-resync-instructions` (pushed, never opened as a PR) and
+  `feat/auth-proxy-and-role-nav-gating` (PR #10 closed unmerged, probably superseded by
+  `phase-3-auth-proxy` and `phase-3.2-route-protection`). Decide on those three.
 - **Windows clone of staff-app:** before pulling `main`, delete any untracked local
   `pnpm-lock.yaml`, or the pull refuses to overwrite it.
 - **Line endings:** auth-server, membership-management and staff-app enforce LF with
@@ -188,7 +193,14 @@ with `/health` timings. If it's surprisingly high, it's still easy to switch bef
 
 ## Open decisions
 
-None right now.
+- **membership-management `/health` and container healthchecks** (decide before Phase 3 step 3).
+  `/health` pings both DBs and answers 503 when Azure SQL is unreachable. As the compose
+  healthcheck, a home IP missing from Azure's firewall would keep staff-app from starting. As the
+  ECS healthcheck, an Azure outage would make ECS kill and restart healthy tasks in a loop over an
+  external dependency a restart can't fix. Standard fix: a cheap liveness endpoint (process up) for
+  the orchestrator, and keep today's deep check for diagnostics/readiness. The change is in the
+  membership-management repo. auth-server's `/health` checks only its own DB, which is less of a
+  problem, but the same question applies.
 
 ---
 
@@ -773,13 +785,37 @@ changed and what was done about it. arm64 is still untested (Phase 4).
 ---
 
 ## Phase 3 — Local docker-compose (in this repo)
-`[ ]`
+`[~]`
 
-- [ ] `compose.yaml` with the three apps plus a `postgres` container holding **both** Postgres
-      databases (`auth` and `members`, each with its own roles), mirroring RDS. An init
-      script in `/docker-entrypoint-initdb.d` creates the second database and the roles (it only
-      runs on an empty volume). Build contexts are `../auth-server`, `../membership-management`,
-      `../staff-app` (decision table).
+- [x] **Postgres** (step 1, 2026-10-16): `compose.yaml` with a `postgres:18.6-alpine` service (same
+      major as local dev; pick it on RDS too) holding **both** databases, mirroring RDS.
+      `postgres/initdb/01-databases.sh` creates `auth` and `members`, each with an owner role
+      (`*_owner`: owns the database, runs migrations) and an app role (`*_app`: `CONNECT`, schema
+      `USAGE`, and through `ALTER DEFAULT PRIVILEGES` DML on every table and sequence the owner
+      creates later). `CONNECT`/`TEMPORARY` revoked from `PUBLIC` and `public` schema access
+      revoked from `PUBLIC`. Passwords come from `.env` (gitignored; `.env.example` lists them)
+      and reach SQL as psql variables (`:'pw'`), so psql quotes them. Generate them with
+      `openssl rand -hex 24`: they go into DB URLs, where base64's `/`, `+`, `=` need encoding.
+      No published port (like RDS); `docker compose exec postgres psql -U postgres`.
+      **Verified** from a separate container on the compose network: each app role is refused
+      on the other database (`permission denied for database`), can't create or drop tables, and
+      gets full DML on a table the owner creates; wrong password fails, right one works.
+  - **Lesson: inside the postgres container, passwords aren't checked.** The official image's
+    `pg_hba.conf` trusts the socket and `127.0.0.1`/`::1`; only other hosts hit the final
+    `host all all all scram-sha-256` rule. So a password test run with `docker compose exec` proves
+    nothing (a wrong password got in); run it from another container on the network.
+  - **Lesson: healthcheck with `pg_isready -h 127.0.0.1`, not the socket.** During init the
+    entrypoint runs a temporary server that listens only on the socket, so a socket check reports
+    ready before the init script finishes.
+  - **Lesson: the init script must be executable** (`chmod +x`, recorded by git). A non-executable
+    `*.sh` is *sourced* into the entrypoint's shell, so its `set -eu` would leak into the rest of
+    the entrypoint. It must also be LF (`.gitattributes`), or `sh` fails with `set: Illegal option -`.
+  - Postgres 18 images mount the volume at `/var/lib/postgresql`, not `.../data`.
+  - The init script runs only on an empty volume: after changing it or a password,
+    `docker compose down -v`.
+- [ ] The three apps in `compose.yaml`. Build contexts are `../auth-server`,
+      `../membership-management`, `../staff-app` (decision table). Each app connects with its
+      `*_app` role; only the migrate services use `*_owner`.
 - [ ] membership-management points at the **Azure SQL dev copy** for `ASSIMILATION_DATABASE_URL`.
       Allowlist your home IP in its firewall. Keep `Encrypt=yes`.
 - [ ] **Two migrate services**, one-shot, same images as the apps with a different `command`:
@@ -858,6 +894,11 @@ changed and what was done about it. arm64 is still untested (Phase 4).
       role (DDL, used only by its migrate task) and an app role (DML only), and `REVOKE CONNECT ...
       FROM PUBLIC` on each database so a service's role can't connect to the other one. Budget
       `max_connections` across both pools, both migrate tasks and admin tools.
+      Reuse the SQL from `postgres/initdb/01-databases.sh`, with two differences: the RDS master
+      user isn't a real superuser, so on PG 16+ it must be granted each owner role first
+      (`GRANT auth_owner TO <master>`) before `CREATE DATABASE ... OWNER auth_owner`; and RDS on
+      PG 15+ forces SSL (`rds.force_ssl=1`), so the DB URLs need `sslmode=require` (or
+      `verify-full` with the RDS CA bundle), which compose doesn't.
 - [ ] Run migrations for both (one-off ECS tasks: `auth-server-migrate`,
       `membership-management-migrate`), then create the admin user.
       **Admin approach (decided 2026-09-30):** a one-off admin process from the same image
