@@ -875,13 +875,18 @@ changed and what was done about it. arm64 is still untested (Phase 4).
       Allowlist your home IP in its firewall. Keep `Encrypt=yes` (ODBC Driver 18's default, but set
       it in the URL so it doesn't depend on that). The whole URL is a secret (password inside), so
       it's in `.env`; an `@` in Azure's `user@server` username belongs URL-encoded as `%40`.
-- [ ] Optional `members-seed` service (profile `seed`, so it only runs on
+- [x] Optional `members-seed` service (profile `seed`, so it only runs on
       `docker compose --profile seed up`): `python -m membership_management.data.seed`, after
       `members-migrate`. It refuses `ENVIRONMENT=production`, so it needs `staging` (or `local`) as its
       own `ENVIRONMENT`. The seed bug is fixed (membership-management PR #38). Which role: plain
       inserts would work as `members_app`, but `--reset` runs `TRUNCATE ... RESTART IDENTITY`,
       which needs the `TRUNCATE` privilege and sequence ownership, so give it the `members_owner`
       URL (dev-only data, never run in prod).
+      **Done** (2026-10-17): `entrypoint` (not `command`), so `run --rm members-seed --reset`
+      appends the flag; no `build:`, since a profile service only runs after the stack built the
+      image; `ENVIRONMENT=staging` (needs no `ASSIMILATION_DATABASE_URL`). **Verified:** an empty
+      DB gets 55 members, 5 small groups with leaders, 35 reports; a rerun refuses with exit `1`;
+      `--reset` reseeds as `members_owner`.
 - [x] Healthchecks plus `depends_on: condition: service_healthy`, against **`/health/live`**
       (decision table), never the deep `/health`. Probes: auth-server and staff-app (Node alpine)
       use busybox `wget -qO- http://127.0.0.1:<port>/health/live` (staff-app: `/api/health`);
