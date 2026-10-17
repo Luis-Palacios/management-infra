@@ -54,6 +54,24 @@ services:
       postgres:
         condition: service_healthy
 
+  # Dev-only demo data (Managua members, small groups with leaders). Never runs on a plain `up`:
+  #   docker compose --profile seed run --rm members-seed          (refuses if any table has rows)
+  #   docker compose --profile seed run --rm members-seed --reset  (truncates first)
+  # entrypoint, not command, so arguments to `run` append to it. No build: a profile service is only
+  # started with `run`, after the stack built the image. The seed refuses ENVIRONMENT=production,
+  # hence staging. Owner role: --reset TRUNCATEs with RESTART IDENTITY, which needs TRUNCATE and
+  # sequence ownership. Never run against RDS.
+  members-seed:
+    image: ekklesiaio/membership-management:local
+    profiles: [ seed ]
+    entrypoint: [ "python", "-m", "membership_management.data.seed" ]
+    environment:
+      ENVIRONMENT: staging
+      MEMBERS_DATABASE_URL: postgresql+psycopg://members_owner:${MEMBERS_OWNER_PASSWORD:?set it in .env}@postgres:5432/members
+    depends_on:
+      members-migrate:
+        condition: service_completed_successfully
+
   # Same image as auth-migrate. Both keep build:, since a service with only image: would try to
   # pull ekklesiaio/auth-server:local, which no registry has; the second build is a cache hit.
   # NODE_ENV=production comes from the image, as on ECS: rate limiting on, and MEMBERSHIP_API_URL
