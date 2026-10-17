@@ -51,5 +51,43 @@ services:
       postgres:
         condition: service_healthy
 
+  # Same image as auth-migrate. Both keep build:, since a service with only image: would try to
+  # pull ekklesiaio/auth-server:local, which no registry has; the second build is a cache hit.
+  # NODE_ENV=production comes from the image, as on ECS: rate limiting on, and MEMBERSHIP_API_URL
+  # + INTERNAL_API_TOKEN required at startup.
+  auth-server:
+    build: ../auth-server
+    image: ekklesiaio/auth-server:local
+    environment:
+      # Public URL = staff-app's origin, as in prod: cookies, email links and the JWT iss/aud go
+      # through staff-app's /api/auth/* proxy, so TRUSTED_ORIGINS stays empty.
+      BETTER_AUTH_URL: http://localhost:3001
+      STAFF_APP_URL: http://localhost:3001
+      BETTER_AUTH_SECRET: ${BETTER_AUTH_SECRET:?set it in .env}
+      DATABASE_URL: postgresql://auth_app:${AUTH_APP_PASSWORD:?set it in .env}@postgres:5432/auth
+      MEMBERSHIP_API_URL: http://membership-management:8000
+      INTERNAL_API_TOKEN: ${INTERNAL_API_TOKEN:?set it in .env}
+      RESEND_API_KEY: ${RESEND_API_KEY:?set it in .env}
+      RESEND_FROM_EMAIL: ${RESEND_FROM_EMAIL:?set it in .env}
+      # Nothing trusted in front locally (the browser hits staff-app's published port directly),
+      # so auth-server overwrites X-Forwarded-For with the TCP peer. In ECS: the VPC CIDR.
+      TRUSTED_PROXIES: ""
+    # Above SHUTDOWN_TIMEOUT_MS (20s), or Compose SIGKILLs mid-drain (its default is 10s).
+    stop_grace_period: 30s
+    healthcheck:
+      # Liveness only (decision table): no DB, so a DB blip doesn't flip it.
+      test: [ "CMD", "wget", "-qO", "/dev/null", "http://127.0.0.1:5000/health/live" ]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+      start_period: 10s
+      start_interval: 1s
+    depends_on:
+      postgres:
+        condition: service_healthy
+      auth-migrate:
+        condition: service_completed_successfully
+    # No ports: internal-only, as in prod.
+
 volumes:
   pgdata:
