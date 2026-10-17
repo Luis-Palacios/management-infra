@@ -76,8 +76,7 @@ Phase 2 lessons).
 for the two databases and their roles, `.env.example`
 ([PR #10](https://github.com/Luis-Palacios/management-infra/pull/10), `04309b3`); (2) the two
 migrate services (done, see Phase 3); (3) the three apps, healthchecks and startup order; (4) the
-full-flow and shutdown tests. **Next: step 3.** Settle the `/health` open decision first, since the
-healthchecks depend on it.
+full-flow and shutdown tests. **Next: step 3.** The healthcheck decision is settled (decision table: `/health/live`).
 
 State of branches:
 - **All branches but `main` deleted** (2026-10-16, local and remote, in all four repos). Each
@@ -177,6 +176,7 @@ just to ship, so go slowly.
 | auth-server emails | **`react-email` stays a runtime dependency** (decided 2026-10-16) | Upstream merged all components into `react-email`; `@react-email/components` and the per-component packages are deprecated. Of the +75 MB in prod `node_modules`, ~28 MB is the never-loaded `email dev` CLI (esbuild, babel, socket.io...); the rest (react, tailwindcss, marked, prismjs, prettier) is imported at run time. A `.pnpmfile.cjs` strip breaks `email:dev` or the frozen lockfile. Revisit with build-time precompiled HTML only if size or scanner noise (Phase 4/10) becomes a real problem |
 | Where `compose.yaml` lives | **This repo, building from `../<repo>`** (decided 2026-10-16) | Infra stays in one repo (compose now, Terraform later); builds from local working trees, so changes are tested before they're pushed. Assumes the sibling layout from the workspace `README.md` (say so at the top of `compose.yaml`). Compose's own gitignored `.env` files live here, separate from each service's dev `.env`. Pulling ECR images (`compose.images.yaml`) can be added after Phase 4 |
 | membership-management migration lock | **`pg_advisory_xact_lock` in Alembic's `env.py`**, taken before `run_migrations()`, with `lock_timeout` moved from the connect options to a `SET LOCAL` after it (decided 2026-10-16) | Tested without it: two simultaneous runs leave the DB correct (one transaction, transactional DDL) but the second exits `1`, a false failed deploy. With the lock the second waits and no-ops. Same behaviour as auth-server's `migrate.ts`; the xact variant releases itself at commit/rollback. `lock_timeout` must come after the advisory lock or a waiting run gives up after 5s |
+| Container healthchecks | **`GET /health/live` (liveness, no DB) for compose and ECS; `/health` stays the deep check** in auth-server and membership-management (decided 2026-10-17; membership-management [PR #40](https://github.com/Luis-Palacios/membership-management/pull/40) `f641256`, auth-server [PR #25](https://github.com/Luis-Palacios/auth-server/pull/25) `c6b2396`) | A failed container healthcheck makes the orchestrator kill and replace the task. If it checked the DBs, an Azure SQL or RDS outage would restart healthy tasks in a loop, and locally a home IP missing from Azure's firewall would keep staff-app from starting. This is the standard liveness/readiness split (Kubernetes, Spring Boot, ASP.NET). membership-management's is `async`, so it doesn't queue behind slow sync routes in the capped thread pool. auth-server's stays 200 while shutting down, and `/health` reports draining. The deep `/health` took **5.1 s** in membership-management with both DBs unreachable, so any monitor of it (Phase 9) needs a timeout above ~6 s. staff-app is unchanged: its `/api/health` was already shallow |
 | Church DB | Existing Azure SQL (`assimilation`, read-only); a **dev/test copy exists** for local + testing | |
 | Deploy order | Manual console first → GitHub Actions → rebuild everything in IaC | Learn each piece before automating it |
 | IaC tool | **Terraform CLI (HCL)**, pinned version (see [Phase 11](#phase-11--infrastructure-as-code)) | Shows up most in job postings; most tutorials and docs use it |
@@ -197,14 +197,7 @@ with `/health` timings. If it's surprisingly high, it's still easy to switch bef
 
 ## Open decisions
 
-- **membership-management `/health` and container healthchecks** (decide before Phase 3 step 3).
-  `/health` pings both DBs and answers 503 when Azure SQL is unreachable. As the compose
-  healthcheck, a home IP missing from Azure's firewall would keep staff-app from starting. As the
-  ECS healthcheck, an Azure outage would make ECS kill and restart healthy tasks in a loop over an
-  external dependency a restart can't fix. Standard fix: a cheap liveness endpoint (process up) for
-  the orchestrator, and keep today's deep check for diagnostics/readiness. The change is in the
-  membership-management repo. auth-server's `/health` checks only its own DB, which is less of a
-  problem, but the same question applies.
+None right now.
 
 ---
 
@@ -853,8 +846,12 @@ changed and what was done about it. arm64 is still untested (Phase 4).
       inserts would work as `members_app`, but `--reset` runs `TRUNCATE ... RESTART IDENTITY`,
       which needs the `TRUNCATE` privilege and sequence ownership, so give it the `members_owner`
       URL (dev-only data, never run in prod).
-- [ ] Healthchecks plus `depends_on: condition: service_healthy`. Startup order:
-      postgres → migrations → auth-server → membership-management → staff-app (membership fetches
+- [ ] Healthchecks plus `depends_on: condition: service_healthy`, against **`/health/live`**
+      (decision table), never the deep `/health`. Probes: auth-server and staff-app (Node alpine)
+      use busybox `wget -qO- http://127.0.0.1:<port>/health/live` (staff-app: `/api/health`);
+      membership-management (Python slim, no curl/wget) uses
+      `python -c "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health/live', timeout=2)"`.
+      Startup order: postgres → migrations → auth-server → membership-management → staff-app (membership fetches
       the JWKS lazily, but staff-app needs both).
 - [ ] **Shared secret:** the same `INTERNAL_API_TOKEN` (32+ chars) in auth-server and
       membership-management; auth-server's `MEMBERSHIP_API_URL=http://membership-management:8000`.
