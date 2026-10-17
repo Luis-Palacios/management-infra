@@ -19,11 +19,37 @@ services:
     healthcheck:
       # -h 127.0.0.1, not the socket: during init the entrypoint runs a temporary server that
       # listens only on the socket, so a socket check reports "ready" before the init script ends.
-      test: ["CMD", "pg_isready", "-h", "127.0.0.1", "-U", "postgres"]
+      test: [ "CMD", "pg_isready", "-h", "127.0.0.1", "-U", "postgres" ]
       interval: 5s
       timeout: 3s
       retries: 10
-    # No ports: like RDS in private subnets. Use `docker compose exec postgres psql -U postgres`.
+  # No ports: like RDS in private subnets. Use `docker compose exec postgres psql -U postgres`.
+  # One-shot: applies auth-server's drizzle migrations, then exits. Same image as the app (step 3),
+  # different command, like the one-off ECS task that runs before each deploy. Connects as the
+  # owner role, the only one allowed to run DDL.
+  auth-migrate:
+    build: ../auth-server
+    image: ekklesiaio/auth-server:local
+    command: [ "node", "dist/migrate.js" ]
+    environment:
+      DATABASE_URL: postgresql://auth_owner:${AUTH_OWNER_PASSWORD:?set it in .env}@postgres:5432/auth
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  # One-shot, as above, for membership-management's Alembic migrations. It needs only these two
+  # variables (no SQL Server URL, no token). ENVIRONMENT=production is the ECS task's value, and it
+  # stops the app from looking for a .env file.
+  members-migrate:
+    build: ../membership-management
+    image: ekklesiaio/membership-management:local
+    command: [ "python", "-m", "membership_management.data.migrate" ]
+    environment:
+      ENVIRONMENT: production
+      MEMBERS_DATABASE_URL: postgresql+psycopg://members_owner:${MEMBERS_OWNER_PASSWORD:?set it in .env}@postgres:5432/members
+    depends_on:
+      postgres:
+        condition: service_healthy
 
 volumes:
   pgdata:
