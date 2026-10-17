@@ -128,5 +128,34 @@ services:
         condition: service_completed_successfully
     # No ports: internal-only, as in prod.
 
+  # The only service with a published port: the browser reaches everything through it, as through
+  # the ALB in prod. Its /api/auth/* proxy forwards to auth-server (read at runtime, not baked in).
+  staff-app:
+    build: ../staff-app
+    image: ekklesiaio/staff-app:local
+    environment:
+      AUTH_SERVER_URL: http://auth-server:5000
+      APPLICATIONS_MEMBERSHIP_API_URL: http://membership-management:8000
+      CHURCH_TIMEZONE: *church-timezone
+    ports:
+      # Host 3001 = the origin in BETTER_AUTH_URL and the JWT iss/aud. Loopback only, so the stack
+      # isn't reachable from other machines on your network.
+      - "127.0.0.1:3001:3000"
+    healthcheck:
+      # Readiness, as for the ALB target group: shallow (config valid, process answers).
+      test: [ "CMD", "wget", "-qO", "/dev/null", "http://127.0.0.1:3000/api/health" ]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+      start_period: 10s
+      start_interval: 1s
+    # Not a boot requirement (/api/health is shallow, so it starts without them). It's so that
+    # `docker compose up staff-app` brings up the whole stack and opens the port once it all works.
+    depends_on:
+      auth-server:
+        condition: service_healthy
+      membership-management:
+        condition: service_healthy
+
 volumes:
   pgdata:
