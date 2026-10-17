@@ -76,7 +76,7 @@ Phase 2 lessons).
 for the two databases and their roles, `.env.example`
 ([PR #10](https://github.com/Luis-Palacios/management-infra/pull/10), `04309b3`); (2) the two
 migrate services (done, see Phase 3); (3) the three apps, healthchecks and startup order; (4) the
-full-flow and shutdown tests. **Next: step 3.** The healthcheck decision is settled (decision table: `/health/live`).
+full-flow and shutdown tests. Step 3 done (2026-10-17, [PR #13](https://github.com/Luis-Palacios/management-infra/pull/13) and the staff-app PR). **Next: step 4**, the full-flow and shutdown tests.
 
 State of branches:
 - **All branches but `main` deleted** (2026-10-16, local and remote, in all four repos). Each
@@ -831,7 +831,7 @@ changed and what was done about it. arm64 is still untested (Phase 4).
     and failed with `exec: "node": executable file not found in $PATH`. Here it failed loudly; in CI
     the same slip would push the wrong image to the wrong ECR repo. A smoke test per image (like
     staff-app's) catches it (Phase 10).
-- [ ] The three apps in `compose.yaml`. Build contexts are `../auth-server`,
+- [x] The three apps in `compose.yaml`. Build contexts are `../auth-server`,
       `../membership-management`, `../staff-app` (decision table). Each app connects with its
       `*_app` role; only the migrate services use `*_owner`. Each app waits on its migration with
       `depends_on: condition: service_completed_successfully`. **Decided: app and migrate services
@@ -860,7 +860,17 @@ changed and what was done about it. arm64 is still untested (Phase 4).
         without a token 401 (prod code path); `/internal/member-links/accepted-invite` 401 with a
         wrong `X-Internal-Token`, 422 with the right one and an empty body; `docker compose stop`
         exits `0` after "Application shutdown complete".
-  - [ ] staff-app.
+  - [x] **staff-app** (2026-10-17): `AUTH_SERVER_URL` and `APPLICATIONS_MEMBERSHIP_API_URL`
+        internal, `CHURCH_TIMEZONE` from the anchor, port `127.0.0.1:3001:3000`, busybox `wget`
+        probe on `/api/health` (shallow, as for the ALB). `depends_on` both apps healthy, as a
+        **local convenience only** (`up staff-app` brings the stack up and the port opens once it
+        works); its `/api/health` doesn't need them, and ECS doesn't gate on them. No
+        `stop_grace_period`: Next's standalone server doesn't drain on SIGTERM, so there's nothing
+        to wait for. **Verified:** a cold `docker compose up -d --wait staff-app` brings up all six
+        services in ~15s; from the host `/api/health` 200, `/` 307 → `/sign-in`, `/api/auth/ok`
+        200 and `/api/auth/get-session` `null` through the proxy; not reachable on the LAN IP;
+        `pnpm smoke ekklesiaio/staff-app:local` passes (CSS and sharp); `docker compose stop` exits
+        `143`.
 - [x] membership-management points at the **Azure SQL dev copy** for `ASSIMILATION_DATABASE_URL`.
       Allowlist your home IP in its firewall. Keep `Encrypt=yes` (ODBC Driver 18's default, but set
       it in the URL so it doesn't depend on that). The whole URL is a secret (password inside), so
@@ -872,33 +882,35 @@ changed and what was done about it. arm64 is still untested (Phase 4).
       inserts would work as `members_app`, but `--reset` runs `TRUNCATE ... RESTART IDENTITY`,
       which needs the `TRUNCATE` privilege and sequence ownership, so give it the `members_owner`
       URL (dev-only data, never run in prod).
-- [ ] Healthchecks plus `depends_on: condition: service_healthy`, against **`/health/live`**
+- [x] Healthchecks plus `depends_on: condition: service_healthy`, against **`/health/live`**
       (decision table), never the deep `/health`. Probes: auth-server and staff-app (Node alpine)
       use busybox `wget -qO- http://127.0.0.1:<port>/health/live` (staff-app: `/api/health`);
       membership-management (Python slim, no curl/wget) uses
       `python -c "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health/live', timeout=2)"`.
       Startup order: postgres → migrations → auth-server and membership-management (no order
       between them, see the membership-management sub-item) → staff-app, which needs both.
-- [ ] **Shared secret:** the same `INTERNAL_API_TOKEN` (32+ chars) in auth-server and
+- [~] **Shared secret:** the same `INTERNAL_API_TOKEN` (32+ chars) in auth-server and
       membership-management; auth-server's `MEMBERSHIP_API_URL=http://membership-management:8000`.
       Test the link: invite a user whose email matches a member, accept, and check
       `members.user_id` is set (auth-server logs a failure but doesn't block the invite).
-- [~] `CHURCH_TIMEZONE` set once (an `x-` extension field or a shared env file) and used by
+- [x] `CHURCH_TIMEZONE` set once (an `x-` extension field or a shared env file) and used by
       membership-management and staff-app. Done as `x-church-timezone: &church-timezone` at the
-      top of `compose.yaml`; membership-management uses it, staff-app still to do.
-- [ ] `stop_grace_period: 30s` on auth-server. Compose's default is 10s, which is below
+      top of `compose.yaml`, used by both.
+- [x] `stop_grace_period: 30s` on auth-server. Compose's default is 10s, which is below
       auth-server's `SHUTDOWN_TIMEOUT_MS` (20s).
-- [ ] Only staff-app publishes a port to the host, to mirror prod (auth/membership internal-only).
-- [ ] **Match prod's `BETTER_AUTH_URL`:** set it to staff-app's origin (`http://localhost:3001`),
+- [x] Only staff-app publishes a port to the host, to mirror prod (auth/membership internal-only).
+      Bound to loopback (`127.0.0.1:3001:3000`): Docker publishes on `0.0.0.0` by default, which
+      makes the stack reachable from the LAN and bypasses the macOS firewall.
+- [x] **Match prod's `BETTER_AUTH_URL`:** set it to staff-app's origin (`http://localhost:3001`),
       not auth-server's. Email links and cookies then go through the proxy as in prod, and
       auth-server's `TRUSTED_ORIGINS` can be empty, as in prod. The JWT `iss`/`aud` change with it,
       so membership-management' `JWT_ISSUER`/`JWT_AUDIENCE` move to `:3001` too
       (`AUTH_SERVER_URL` stays internal).
-- [~] **One `.env.example` in this repo, not one per service** (decided 2026-10-17). Non-secret
+- [x] **One `.env.example` in this repo, not one per service** (decided 2026-10-17). Non-secret
       values are written in `compose.yaml`, where they're reviewable; only secrets come from the
       gitignored `.env`, each `${VAR:?}` so a missing one fails fast. It mirrors ECS: plain
       `environment` in the task definition, `secrets:` from SSM (Phase 7). Each service adds its
-      keys as it lands (auth-server and membership-management: done).
+      keys as it lands (all three done; staff-app has no secrets).
 - [x] membership-management needs `ENVIRONMENT` set as a real env var in compose (`environment:`
       or `env_file:` in `compose.yaml`; the image never reads a `.env` itself). Use `staging` or
       `production` there to exercise the prod code path (no `/docs`, `DEBUG` refused in production).
