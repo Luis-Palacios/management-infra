@@ -1,0 +1,4 @@
+# Store every text file with LF line endings, whatever the editor saves (Windows editors default to
+# CRLF). The init scripts run under Linux sh inside the postgres container, where a CRLF line fails
+# with "set: Illegal option -".
+* text=auto eol=lf
