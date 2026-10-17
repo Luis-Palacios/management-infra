@@ -834,9 +834,22 @@ changed and what was done about it. arm64 is still untested (Phase 4).
 - [ ] The three apps in `compose.yaml`. Build contexts are `../auth-server`,
       `../membership-management`, `../staff-app` (decision table). Each app connects with its
       `*_app` role; only the migrate services use `*_owner`. Each app waits on its migration with
-      `depends_on: condition: service_completed_successfully`. Decide whether app and migrate
-      services both keep `build:` (Compose builds the same context twice; the second is a full
-      cache hit) or only one builds and the other just names the `image:`.
+      `depends_on: condition: service_completed_successfully`. **Decided: app and migrate services
+      both keep `build:`** with the same `image:`. A service with only `image:` would try to pull
+      `ekklesiaio/<repo>:local`, which no registry has, so a fresh clone could fail; the second
+      build is a full cache hit.
+  - [x] **auth-server** (2026-10-17): `BETTER_AUTH_URL`/`STAFF_APP_URL` = `http://localhost:3001`,
+        `auth_app` URL, `MEMBERSHIP_API_URL=http://membership-management:8000` (required under the
+        image's `NODE_ENV=production`; the notifier is best-effort, so it's harmless before that
+        service exists), `TRUSTED_PROXIES` empty, `stop_grace_period: 30s`, busybox `wget` probe on
+        `/health/live` with `start_interval: 1s`, no ports. **Verified:** healthy in ~3s after
+        `auth-migrate`; from another container `/health/live`, `/health` (`db: up`) and the JWKS
+        answer (the key row written as `auth_app`); `docker compose stop` exits `0` after
+        "Shutdown complete". **Phase 8 note:** in prod the chain is ALB → staff-app → auth-server
+        and staff-app forwards `X-Forwarded-For` untouched, so `TRUSTED_PROXIES` (the VPC CIDR) has
+        to cover staff-app's tasks, not just the ALB.
+  - [ ] membership-management.
+  - [ ] staff-app.
 - [ ] membership-management points at the **Azure SQL dev copy** for `ASSIMILATION_DATABASE_URL`.
       Allowlist your home IP in its firewall. Keep `Encrypt=yes`.
 - [ ] Optional `members-seed` service (profile `seed`, so it only runs on
@@ -867,7 +880,11 @@ changed and what was done about it. arm64 is still untested (Phase 4).
       auth-server's `TRUSTED_ORIGINS` can be empty, as in prod. The JWT `iss`/`aud` change with it,
       so membership-management' `JWT_ISSUER`/`JWT_AUDIENCE` move to `:3001` too
       (`AUTH_SERVER_URL` stays internal).
-- [ ] `.env.example` per service, with real `.env` files gitignored.
+- [~] **One `.env.example` in this repo, not one per service** (decided 2026-10-17). Non-secret
+      values are written in `compose.yaml`, where they're reviewable; only secrets come from the
+      gitignored `.env`, each `${VAR:?}` so a missing one fails fast. It mirrors ECS: plain
+      `environment` in the task definition, `secrets:` from SSM (Phase 7). Each service adds its
+      keys as it lands (auth-server: done).
 - [ ] membership-management needs `ENVIRONMENT` set as a real env var in compose (`environment:`
       or `env_file:` in `compose.yaml`; the image never reads a `.env` itself). Use `staging` or
       `production` there to exercise the prod code path (no `/docs`, `DEBUG` refused in production).
