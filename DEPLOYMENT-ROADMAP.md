@@ -12,10 +12,12 @@ Started: 2026-09-21
 
 ---
 
-## Where we left off (2026-10-16)
+## Where we left off (2026-10-17)
 
-**Phases 0, 1 and 2 are done; Phase 3 (compose) is in progress: Postgres and the migrations
-are done.**
+**Phases 0, 1, 2 and 3 are done. Next: Phase 4 (build and push the images to ECR).** Phase 3
+ended with the whole stack in compose and the full flow tested through the browser (see Phase 3);
+what it taught that the AWS phases need is written into Phases 7 and 8. What follows from here to
+"Revisit done" is the 2026-10-16 state, kept for context.
 Phase 2's Dockerfiles were merged
 first (auth-server
 [PR #18](https://github.com/Luis-Palacios/auth-server/pull/18), membership-management
@@ -76,7 +78,7 @@ Phase 2 lessons).
 for the two databases and their roles, `.env.example`
 ([PR #10](https://github.com/Luis-Palacios/management-infra/pull/10), `04309b3`); (2) the two
 migrate services (done, see Phase 3); (3) the three apps, healthchecks and startup order; (4) the
-full-flow and shutdown tests. Step 3 done (2026-10-17, [PR #13](https://github.com/Luis-Palacios/management-infra/pull/13) and the staff-app PR). **Next: step 4**, the full-flow and shutdown tests.
+full-flow and shutdown tests. Steps 3 and 4 done (2026-10-17, [PR #13](https://github.com/Luis-Palacios/management-infra/pull/13), [PR #14](https://github.com/Luis-Palacios/management-infra/pull/14) and the seed + step 4 PR). **Phase 3 is done.**
 
 State of branches:
 - **All branches but `main` deleted** (2026-10-16, local and remote, in all four repos). Each
@@ -782,7 +784,7 @@ changed and what was done about it. arm64 is still untested (Phase 4).
 ---
 
 ## Phase 3 — Local docker-compose (in this repo)
-`[~]`
+`[x]`
 
 - [x] **Postgres** (step 1, 2026-10-16,
       [PR #10](https://github.com/Luis-Palacios/management-infra/pull/10), `04309b3`):
@@ -864,9 +866,9 @@ changed and what was done about it. arm64 is still untested (Phase 4).
         internal, `CHURCH_TIMEZONE` from the anchor, port `127.0.0.1:3001:3000`, busybox `wget`
         probe on `/api/health` (shallow, as for the ALB). `depends_on` both apps healthy, as a
         **local convenience only** (`up staff-app` brings the stack up and the port opens once it
-        works); its `/api/health` doesn't need them, and ECS doesn't gate on them. No
-        `stop_grace_period`: Next's standalone server doesn't drain on SIGTERM, so there's nothing
-        to wait for. **Verified:** a cold `docker compose up -d --wait staff-app` brings up all six
+        works); its `/api/health` doesn't need them, and ECS doesn't gate on them.
+        `stop_grace_period: 30s` (added in step 4: it was first left out on the wrong belief that
+        Next doesn't drain; Phase 2 had already shown it does). **Verified:** a cold `docker compose up -d --wait staff-app` brings up all six
         services in ~15s; from the host `/api/health` 200, `/` 307 → `/sign-in`, `/api/auth/ok`
         200 and `/api/auth/get-session` `null` through the proxy; not reachable on the LAN IP;
         `pnpm smoke ekklesiaio/staff-app:local` passes (CSS and sharp); `docker compose stop` exits
@@ -894,10 +896,12 @@ changed and what was done about it. arm64 is still untested (Phase 4).
       `python -c "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health/live', timeout=2)"`.
       Startup order: postgres → migrations → auth-server and membership-management (no order
       between them, see the membership-management sub-item) → staff-app, which needs both.
-- [~] **Shared secret:** the same `INTERNAL_API_TOKEN` (32+ chars) in auth-server and
+- [x] **Shared secret:** the same `INTERNAL_API_TOKEN` (32+ chars) in auth-server and
       membership-management; auth-server's `MEMBERSHIP_API_URL=http://membership-management:8000`.
       Test the link: invite a user whose email matches a member, accept, and check
       `members.user_id` is set (auth-server logs a failure but doesn't block the invite).
+      **Verified in step 4:** one `POST /internal/member-links/accepted-invite -> 200` on accept,
+      and the member's `user_id` equals the new auth user's id.
 - [x] `CHURCH_TIMEZONE` set once (an `x-` extension field or a shared env file) and used by
       membership-management and staff-app. Done as `x-church-timezone: &church-timezone` at the
       top of `compose.yaml`, used by both.
@@ -919,12 +923,51 @@ changed and what was done about it. arm64 is still untested (Phase 4).
 - [x] membership-management needs `ENVIRONMENT` set as a real env var in compose (`environment:`
       or `env_file:` in `compose.yaml`; the image never reads a `.env` itself). Use `staging` or
       `production` there to exercise the prod code path (no `/docs`, `DEBUG` refused in production).
-- [ ] Test the whole flow: sign-up → email verification → sign-in → promote with `set-role.js` →
+- [x] Test the whole flow: sign-up → email verification → sign-in → promote with `set-role.js` →
       invite → accept (member linked) → list applications (SQL Server through the JWT path) →
       small groups and a report (members DB) → sign in as a leader and check what a leader can
-      and can't see (permissions from the JWT).
-- [ ] Test shutdown for all three: `docker compose stop` during a slow request (in-flight requests
-      finish; staff-app exits 143, the others 0).
+      and can't see (permissions from the JWT). **Done 2026-10-17** in the browser, on seeded data:
+      - Sign-up: user `pending`, `email_verified` false; the verification link pointed to `:3001`;
+        clicking it verified and signed in (auto sign-in), so the "almost in" page. No
+        `verification` row: better-auth's link is a JWT signed with `BETTER_AUTH_SECRET`.
+      - `docker compose exec auth-server node dist/scripts/set-role.js <email> admin`, then a
+        reload (no sign-out) showed the admin screens.
+      - **First failure:** every data page "Something went wrong": `/api/auth/token` 500, "Failed
+        to decrypt private key". Cause: the step 3 auth-server check ran with a throwaway
+        `BETTER_AUTH_SECRET` and called the JWKS endpoint, which created the signing key encrypted
+        with it. Deleting that `jwks` row fixed it (a new key on the next token request, and
+        membership-management fetched it without a restart). Rotation runbook added to Phase 7.
+      - Admin: `/me`, reports (members DB) and `/applications/recents` (Azure SQL, ~2.2s cold, then
+        25–60 ms) all 200. Edited a seeded leader's email (`PATCH /members/15 -> 200`).
+      - Invited that email as `smallGroupLeader`, accepted in a private window: member linked (see
+        the shared secret item).
+      - As the leader: `/groups/2` (another leader's group) "not found" from the API's own scope
+        check (`GET /small-groups/2 -> 404`); `/applications` "not found" from staff-app's own
+        permission check, **without calling the API**; a report for their group saved
+        (`POST /small-groups/1/reports -> 201`, `submitted_by_member_id` = the linked member).
+      - Session `ip_address` is staff-app's container IP (`TRUSTED_PROXIES` empty, as configured).
+        The same query checks the Phase 8 fix.
+      - **Gap (follow-up):** the API's own 403 for a leader on applications can't be reached from
+        the UI, since staff-app refuses first. It needs an automated test with a leader JWT;
+        membership-management has no test suite yet.
+- [x] Test shutdown for all three: `docker compose stop` during a slow request (in-flight requests
+      finish; staff-app exits 143, the others 0). **Done 2026-10-17.** Neither API has a slow route,
+      so the client made it slow: `curlimages/curl` on the compose network uploading a 20 KB body
+      at 2 KB/s (~10s), with `stop` issued 3s in. A status code arriving after the stop means the
+      server waited for it.
+
+      | Service | Result | Exit |
+      |---|---|---|
+      | membership-management | drained, response 7s after `stop` | 0 |
+      | auth-server | drained, response 6s after `stop` | 0 |
+      | staff-app, no `stop_grace_period` | **SIGKILLed 3s after SIGTERM**, client got nothing | 137 |
+      | staff-app, `stop_grace_period: 30s` | drained, response, then exit | 143 |
+
+  - **Lesson: always set the grace period explicitly.** The engine's default before SIGKILL was
+    documented as 10s but measured **3s** here (Docker Desktop, engine 29.8.2, Compose 5.5.1;
+    `docker stop` on a container that ignores SIGTERM). Cause not found; the fix doesn't depend on it.
+  - **Lesson: Next's standalone server drains** on SIGTERM (Phase 2 had shown it). The step 3
+    sub-item first said it doesn't, and so left staff-app on the default; the test caught it.
 
 **New concepts:** container networking/DNS by service name, which is the same idea as Service Connect.
 
@@ -994,6 +1037,16 @@ changed and what was done about it. arm64 is still untested (Phase 4).
       `INTERNAL_API_TOKEN`. membership-management: `ASSIMILATION_DATABASE_URL`,
       `MEMBERS_DATABASE_URL`, `INTERNAL_API_TOKEN` (the same parameter as auth-server's, read by
       both execution roles). Migrate tasks: the owner-role URLs, separate parameters.
+- [ ] **Runbook for rotating `BETTER_AUTH_SECRET`.** better-auth encrypts the JWT signing key in
+      the `jwks` table with it, and signs email-verification links with it (stateless, no
+      `verification` row). Changing it makes `/api/auth/token` answer 500 ("Failed to decrypt
+      private key"), so staff-app can't call either API: every data page fails. Found in Phase 3
+      (2026-10-17): a test run with a throwaway secret created the key, and the real secret couldn't
+      read it; deleting the `jwks` row fixed it. Keep the encryption on; the runbook needs: new
+      secret in SSM → delete or rotate the `jwks` rows in the same window → redeploy auth-server →
+      membership-management refetches the JWKS (an unknown `kid` triggers it; verified here).
+      Expect everyone to be signed out (the session cookie is signed with the secret too; verify
+      when writing the runbook) and outstanding verification links to break.
 - [ ] ECS task definitions reference them through `secrets:` (injected as env vars at start).
       The task *execution role* gets read access only to its own parameters.
 
@@ -1020,6 +1073,9 @@ changed and what was done about it. arm64 is still untested (Phase 4).
       `GRACEFUL_SHUTDOWN_TIMEOUT_SECONDS` is 30s (equal to `REQUEST_TIMEOUT_SECONDS`, so the
       longest allowed request can finish), the same as ECS's default, so it'd be SIGKILLed at the
       end of its drain window (found in Phase 3, where compose has `stop_grace_period: 40s`).
+      **staff-app needs it explicit too** (30s): Next drains in-flight requests on SIGTERM. Set the
+      target group's deregistration delay no higher than that, so the ALB stops sending new requests
+      first and Next gets the rest of the window to finish the ones in flight (Phase 3 step 4).
 - [ ] **Verify Service Connect draining.** Does ECS remove auth-server from Service Connect before
       sending SIGTERM, or do requests keep arriving after it? Test it by redeploying while running
       a request loop through staff-app and watching for errors. If errors show up, add a short
