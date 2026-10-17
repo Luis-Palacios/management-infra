@@ -159,6 +159,10 @@ services:
       # Host 3001 = the origin in BETTER_AUTH_URL and the JWT iss/aud. Loopback only, so the stack
       # isn't reachable from other machines on your network.
       - "127.0.0.1:3001:3000"
+    # Next's standalone server drains in-flight requests on SIGTERM, then exits 143 (Node re-raises
+    # the signal). The engine's default before SIGKILL measured ~3s here (documented: 10s), so set it
+    # explicitly; 30s = ECS's default stopTimeout.
+    stop_grace_period: 30s
     healthcheck:
       # Readiness, as for the ALB target group: shallow (config valid, process answers).
       test: [ "CMD", "wget", "-qO", "/dev/null", "http://127.0.0.1:3000/api/health" ]
